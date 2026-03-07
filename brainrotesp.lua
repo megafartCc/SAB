@@ -1,8 +1,8 @@
 -- ==================================================
 -- Brainrot ESP Module — Drawing-based
 -- Steal A Brainrot | Clean visual ESP for brainrots
--- API: Init(), Start(), Stop(), SetBox(b), SetName(b),
---      SetTracers(b), SetMoney(b), SetWireframe(b),
+-- API: Init(), Start(), Stop(), SetName(b), SetSkeleton(b),
+--      SetTracers(b), SetMoney(b),
 --      SetMostExpensive(b), GetBest()
 -- ==================================================
 
@@ -80,12 +80,11 @@ end
 
 -- ==================== COLORS ====================
 local COLORS = {
-    box      = C3(50, 180, 255),  -- Cyan blue
+    skel     = C3(50, 180, 255),  -- Cyan blue
     name     = C3(255, 255, 255), -- White
     money    = C3(80, 255, 120),  -- Green
     tracer   = C3(50, 180, 255),  -- Cyan blue
-    wire     = C3(130, 90, 255),  -- Purple
-    bestBox  = C3(255, 200, 50),  -- Gold
+    bestAccent = C3(255, 200, 50),-- Gold
     bestName = C3(255, 220, 80),  -- Gold text
     bestMoney= C3(255, 180, 50),  -- Gold money
 }
@@ -93,11 +92,10 @@ local COLORS = {
 -- ==================== STATE ====================
 local S = {
     enabled = false,
-    boxEnabled = false,
     nameEnabled = false,
+    skeletonEnabled = false,
     tracersEnabled = false,
     moneyEnabled = false,
-    wireframeEnabled = false,
     mostExpensiveOnly = false,
     tracked = {},       -- stand -> visual meta
     knownStands = {},
@@ -119,20 +117,12 @@ local S = {
 local function makeDrawings()
     local d = {}
 
-    -- Box (4 lines)
-    d.box = {}
-    for i = 1, 4 do
-        local l = Drawing.new("Line")
-        l.Visible = false; l.Color = COLORS.box; l.Thickness = 1.5
-        d.box[i] = l
-    end
-
-    -- Box corner accents (8 short lines for corners)
-    d.corners = {}
+    -- Skeleton lines (8 bones for R6: head-neck, shoulders, 2 arms, spine, hips, 2 legs)
+    d.skel = {}
     for i = 1, 8 do
         local l = Drawing.new("Line")
-        l.Visible = false; l.Color = COLORS.box; l.Thickness = 2
-        d.corners[i] = l
+        l.Visible = false; l.Color = COLORS.skel; l.Thickness = 2
+        d.skel[i] = l
     end
 
     -- Name text
@@ -151,15 +141,7 @@ local function makeDrawings()
     d.tracer = Drawing.new("Line")
     d.tracer.Visible = false; d.tracer.Color = COLORS.tracer; d.tracer.Thickness = 1
 
-    -- Wireframe (12 lines for 3D bounding box)
-    d.wire = {}
-    for i = 1, 12 do
-        local l = Drawing.new("Line")
-        l.Visible = false; l.Color = COLORS.wire; l.Thickness = 1
-        d.wire[i] = l
-    end
-
-    -- Best indicator (diamond/star above name)
+    -- Best indicator
     d.bestTag = Drawing.new("Text")
     d.bestTag.Visible = false; d.bestTag.Color = COLORS.bestName
     d.bestTag.Size = 12; d.bestTag.Center = true; d.bestTag.Outline = true
@@ -171,9 +153,7 @@ end
 local function destroyDrawings(d)
     if not d then return end
     pcall(function()
-        for _, l in ipairs(d.box or {}) do l:Remove() end
-        for _, l in ipairs(d.corners or {}) do l:Remove() end
-        for _, l in ipairs(d.wire or {}) do l:Remove() end
+        for _, l in ipairs(d.skel or {}) do l:Remove() end
         if d.name then d.name:Remove() end
         if d.money then d.money:Remove() end
         if d.tracer then d.tracer:Remove() end
@@ -184,9 +164,7 @@ end
 local function hideDrawings(d)
     if not d then return end
     pcall(function()
-        for _, l in ipairs(d.box or {}) do l.Visible = false end
-        for _, l in ipairs(d.corners or {}) do l.Visible = false end
-        for _, l in ipairs(d.wire or {}) do l.Visible = false end
+        for _, l in ipairs(d.skel or {}) do l.Visible = false end
         if d.name then d.name.Visible = false end
         if d.money then d.money.Visible = false end
         if d.tracer then d.tracer.Visible = false end
@@ -432,18 +410,12 @@ local function buildStandInfo(stand)
 end
 
 -- ==================== RENDER ====================
-local function getModelBBox(model)
-    if not model then return nil, nil end
-    local cf, size = nil, nil
-    pcall(function() cf, size = model:GetBoundingBox() end)
-    return cf, size
-end
-
 local function renderStand(meta)
     local d = meta.drawings
     local info = meta.info
     if not d or not info or not info.root or not info.root.Parent then hideDrawings(d); return end
 
+    local model = info.model
     local isBest = S.mostExpensiveOnly and S.bestStand == info.stand
 
     -- Position from root part
@@ -460,79 +432,76 @@ local function renderStand(meta)
     -- If most expensive only, hide non-best
     if S.mostExpensiveOnly and not isBest then hideDrawings(d); return end
 
-    -- Calc 2D box from model bounds
-    local cf, size = getModelBBox(info.model)
-    local h, w
-    if cf and size then
-        local top = Camera:WorldToViewportPoint((cf * CFrame.new(0, size.Y/2, 0)).Position)
-        local bot = Camera:WorldToViewportPoint((cf * CFrame.new(0, -size.Y/2, 0)).Position)
-        h = math.abs(bot.Y - top.Y)
-        h = math.max(h, 30)
-        w = h * 0.7
-    else
-        local tP = Camera:WorldToViewportPoint(pos + Vector3.new(0,2.5,0))
-        local bP = Camera:WorldToViewportPoint(pos - Vector3.new(0,1.5,0))
-        h = math.abs(bP.Y - tP.Y)
-        h = math.max(h, 30)
-        w = h * 0.6
+    local skelColor = isBest and COLORS.bestAccent or COLORS.skel
+
+    -- Find character parts on the model for skeleton + head positioning
+    local head, torso, lA, rA, lL, rL
+    if model then
+        head = model:FindFirstChild("Head")
+        torso = model:FindFirstChild("Torso") or model:FindFirstChild("UpperTorso")
+        lA = model:FindFirstChild("Left Arm") or model:FindFirstChild("LeftUpperArm")
+        rA = model:FindFirstChild("Right Arm") or model:FindFirstChild("RightUpperArm")
+        lL = model:FindFirstChild("Left Leg") or model:FindFirstChild("LeftUpperLeg")
+        rL = model:FindFirstChild("Right Leg") or model:FindFirstChild("RightUpperLeg")
     end
 
-    local cx, cy = sv.X, sv.Y
-    local boxColor = isBest and COLORS.bestBox or COLORS.box
-
-    -- ===== BOX ESP =====
-    if S.boxEnabled then
-        local x1, y1 = cx - w/2, cy - h/2
-        local x2, y2 = cx + w/2, cy + h/2
-
-        d.box[1].From = V2(x1,y1); d.box[1].To = V2(x2,y1); d.box[1].Color = boxColor; d.box[1].Visible = true
-        d.box[2].From = V2(x1,y2); d.box[2].To = V2(x2,y2); d.box[2].Color = boxColor; d.box[2].Visible = true
-        d.box[3].From = V2(x1,y1); d.box[3].To = V2(x1,y2); d.box[3].Color = boxColor; d.box[3].Visible = true
-        d.box[4].From = V2(x2,y1); d.box[4].To = V2(x2,y2); d.box[4].Color = boxColor; d.box[4].Visible = true
-
-        -- Corner accents (short bold lines at corners)
-        local cLen = math.max(w * 0.2, 5)
-        -- Top-left
-        d.corners[1].From = V2(x1,y1); d.corners[1].To = V2(x1+cLen,y1); d.corners[1].Color = boxColor; d.corners[1].Visible = true
-        d.corners[2].From = V2(x1,y1); d.corners[2].To = V2(x1,y1+cLen); d.corners[2].Color = boxColor; d.corners[2].Visible = true
-        -- Top-right
-        d.corners[3].From = V2(x2,y1); d.corners[3].To = V2(x2-cLen,y1); d.corners[3].Color = boxColor; d.corners[3].Visible = true
-        d.corners[4].From = V2(x2,y1); d.corners[4].To = V2(x2,y1+cLen); d.corners[4].Color = boxColor; d.corners[4].Visible = true
-        -- Bottom-left
-        d.corners[5].From = V2(x1,y2); d.corners[5].To = V2(x1+cLen,y2); d.corners[5].Color = boxColor; d.corners[5].Visible = true
-        d.corners[6].From = V2(x1,y2); d.corners[6].To = V2(x1,y2-cLen); d.corners[6].Color = boxColor; d.corners[6].Visible = true
-        -- Bottom-right
-        d.corners[7].From = V2(x2,y2); d.corners[7].To = V2(x2-cLen,y2); d.corners[7].Color = boxColor; d.corners[7].Visible = true
-        d.corners[8].From = V2(x2,y2); d.corners[8].To = V2(x2,y2-cLen); d.corners[8].Color = boxColor; d.corners[8].Visible = true
-    else
-        for i=1,4 do d.box[i].Visible = false end
-        for i=1,8 do d.corners[i].Visible = false end
-    end
-
-    -- ===== NAME ESP =====
+    -- ===== NAME ESP (above brainrot's head in world space) =====
     if S.nameEnabled then
-        d.name.Text = info.name or "Brainrot"
-        d.name.Color = isBest and COLORS.bestName or COLORS.name
-        d.name.Position = V2(cx, cy - h/2 - 18)
-        d.name.Visible = true
+        local nameWorldPos
+        if head and head:IsA("BasePart") then
+            nameWorldPos = head.Position + Vector3.new(0, 1.5, 0)
+        else
+            nameWorldPos = pos + Vector3.new(0, 3, 0)
+        end
+        local nameScreen, nameOn = w2s(nameWorldPos)
+        if nameOn then
+            d.name.Text = info.name or "Brainrot"
+            d.name.Color = isBest and COLORS.bestName or COLORS.name
+            d.name.Position = nameScreen
+            d.name.Visible = true
+        else
+            d.name.Visible = false
+        end
     else
         d.name.Visible = false
     end
 
-    -- ===== BEST TAG =====
-    if isBest and (S.nameEnabled or S.boxEnabled) then
-        d.bestTag.Position = V2(cx, cy - h/2 - 32)
-        d.bestTag.Visible = true
+    -- ===== BEST TAG (above name) =====
+    if isBest and S.nameEnabled then
+        local tagPos
+        if head and head:IsA("BasePart") then
+            tagPos = head.Position + Vector3.new(0, 2.2, 0)
+        else
+            tagPos = pos + Vector3.new(0, 3.7, 0)
+        end
+        local tagScreen, tagOn = w2s(tagPos)
+        if tagOn then
+            d.bestTag.Position = tagScreen
+            d.bestTag.Visible = true
+        else
+            d.bestTag.Visible = false
+        end
     else
         d.bestTag.Visible = false
     end
 
-    -- ===== MONEY PER/S =====
+    -- ===== MONEY PER/S (below feet in world space) =====
     if S.moneyEnabled then
-        d.money.Text = "$" .. formatNumber(info.income) .. "/s"
-        d.money.Color = isBest and COLORS.bestMoney or COLORS.money
-        d.money.Position = V2(cx, cy + h/2 + 4)
-        d.money.Visible = true
+        local moneyWorldPos
+        if torso and torso:IsA("BasePart") then
+            moneyWorldPos = torso.Position - Vector3.new(0, 2.5, 0)
+        else
+            moneyWorldPos = pos - Vector3.new(0, 1.5, 0)
+        end
+        local moneyScreen, moneyOn = w2s(moneyWorldPos)
+        if moneyOn then
+            d.money.Text = "$" .. formatNumber(info.income) .. "/s"
+            d.money.Color = isBest and COLORS.bestMoney or COLORS.money
+            d.money.Position = moneyScreen
+            d.money.Visible = true
+        else
+            d.money.Visible = false
+        end
     else
         d.money.Visible = false
     end
@@ -542,40 +511,53 @@ local function renderStand(meta)
         local ox = Camera.ViewportSize.X / 2
         local oy = Camera.ViewportSize.Y
         d.tracer.From = V2(ox, oy)
-        d.tracer.To = V2(cx, cy + h/2)
-        d.tracer.Color = isBest and COLORS.bestBox or COLORS.tracer
+        d.tracer.To = V2(sv.X, sv.Y)
+        d.tracer.Color = isBest and COLORS.bestAccent or COLORS.tracer
         d.tracer.Visible = true
     else
         d.tracer.Visible = false
     end
 
-    -- ===== WIREFRAME (3D bounding box) =====
-    if S.wireframeEnabled and cf and size then
-        local sx, sy, sz = size.X/2, size.Y/2, size.Z/2
-        local verts = {
-            (cf * CF(-sx,-sy,-sz)).Position, (cf * CF(sx,-sy,-sz)).Position,
-            (cf * CF(sx,-sy,sz)).Position,   (cf * CF(-sx,-sy,sz)).Position,
-            (cf * CF(-sx,sy,-sz)).Position,  (cf * CF(sx,sy,-sz)).Position,
-            (cf * CF(sx,sy,sz)).Position,    (cf * CF(-sx,sy,sz)).Position,
+    -- ===== SKELETON (R6 style) =====
+    if S.skeletonEnabled and torso and torso:IsA("BasePart") then
+        local tc = torso.CFrame
+        local neck = (tc * CF(0,1,0)).Position
+        local pelvis = (tc * CF(0,-1,0)).Position
+        local lS = (tc * CF(-1.5,1,0)).Position
+        local rS = (tc * CF(1.5,1,0)).Position
+        local lH = (tc * CF(-0.5,-1,0)).Position
+        local rH = (tc * CF(0.5,-1,0)).Position
+        local lHand = lA and lA:IsA("BasePart") and (lA.CFrame * CF(0,-1,0)).Position or lS
+        local rHand = rA and rA:IsA("BasePart") and (rA.CFrame * CF(0,-1,0)).Position or rS
+        local lFoot = lL and lL:IsA("BasePart") and (lL.CFrame * CF(0,-1,0)).Position or lH
+        local rFoot = rL and rL:IsA("BasePart") and (rL.CFrame * CF(0,-1,0)).Position or rH
+        local headPos = head and head:IsA("BasePart") and head.Position or neck
+
+        local joints = {
+            {headPos, neck},    -- head to neck
+            {lS, rS},           -- shoulders
+            {lS, lHand},        -- left arm
+            {rS, rHand},        -- right arm
+            {neck, pelvis},     -- spine
+            {lH, rH},           -- hips
+            {lH, lFoot},        -- left leg
+            {rH, rFoot},        -- right leg
         }
-        local edges = {
-            {1,2},{2,3},{3,4},{4,1}, -- bottom
-            {5,6},{6,7},{7,8},{8,5}, -- top
-            {1,5},{2,6},{3,7},{4,8}, -- verticals
-        }
-        local wCol = isBest and COLORS.bestBox or COLORS.wire
-        for i, e in ipairs(edges) do
-            local l = d.wire[i]
+
+        for i, j in ipairs(joints) do
+            local l = d.skel[i]
             if l then
-                local a, oA, zA = w2s(verts[e[1]])
-                local b, oB, zB = w2s(verts[e[2]])
+                local a, oA, zA = w2s(j[1])
+                local b, oB, zB = w2s(j[2])
                 if (oA or oB) and zA > 0 and zB > 0 then
-                    l.From = a; l.To = b; l.Color = wCol; l.Visible = true
-                else l.Visible = false end
+                    l.From = a; l.To = b; l.Color = skelColor; l.Visible = true
+                else
+                    l.Visible = false
+                end
             end
         end
     else
-        for i=1,12 do d.wire[i].Visible = false end
+        for i = 1, 8 do d.skel[i].Visible = false end
     end
 end
 
@@ -780,11 +762,10 @@ function API:Stop()
     for stand in pairs(S.tracked) do clearStand(stand) end
 end
 
-function API:SetBox(v) S.boxEnabled = v end
 function API:SetName(v) S.nameEnabled = v end
+function API:SetSkeleton(v) S.skeletonEnabled = v end
 function API:SetTracers(v) S.tracersEnabled = v end
 function API:SetMoney(v) S.moneyEnabled = v end
-function API:SetWireframe(v) S.wireframeEnabled = v end
 function API:SetMostExpensive(v) S.mostExpensiveOnly = v and true or false; recomputeBest() end
 
 function API:GetBest()
