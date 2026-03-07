@@ -1,7 +1,9 @@
 -- ==================================================
--- Brainrot ESP Module for Steal A Brainrot
--- Tracks animal podiums on plots, shows income/gen
--- API: Init(), Start(), Stop(), SetMostExpensive(bool), GetBest()
+-- Brainrot ESP Module — Drawing-based
+-- Steal A Brainrot | Clean visual ESP for brainrots
+-- API: Init(), Start(), Stop(), SetBox(b), SetName(b),
+--      SetTracers(b), SetMoney(b), SetWireframe(b),
+--      SetMostExpensive(b), GetBest()
 -- ==================================================
 
 local Players = game:GetService("Players")
@@ -11,14 +13,18 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
 local LOCAL_PLAYER = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+local V2 = Vector2.new
+local C3 = Color3.fromRGB
+local CF = CFrame.new
 
 -- Safe requires
-local sharedFolder = pcall(function() return ReplicatedStorage:WaitForChild("Shared", 5) end) and ReplicatedStorage:FindFirstChild("Shared")
-local datasFolder = pcall(function() return ReplicatedStorage:WaitForChild("Datas", 5) end) and ReplicatedStorage:FindFirstChild("Datas")
-local packagesFolder = pcall(function() return ReplicatedStorage:WaitForChild("Packages", 5) end) and ReplicatedStorage:FindFirstChild("Packages")
+local sharedFolder, datasFolder, packagesFolder
+pcall(function() sharedFolder = ReplicatedStorage:WaitForChild("Shared", 5) end)
+pcall(function() datasFolder = ReplicatedStorage:WaitForChild("Datas", 5) end)
+pcall(function() packagesFolder = ReplicatedStorage:WaitForChild("Packages", 5) end)
 
 local Synchronizer, AnimalsDataModule, AnimalsSharedModule, MutationsDataModule, TraitsDataModule, GameDataModule
-
 pcall(function() Synchronizer = require(packagesFolder:WaitForChild("Synchronizer", 3)) end)
 pcall(function() AnimalsDataModule = require(datasFolder:WaitForChild("Animals", 3)) end)
 pcall(function() AnimalsSharedModule = require(sharedFolder:WaitForChild("Animals", 3)) end)
@@ -31,76 +37,281 @@ MutationsDataModule = MutationsDataModule or {}
 TraitsDataModule = TraitsDataModule or {}
 GameDataModule = GameDataModule or {}
 
+-- ==================== HELPERS ====================
 local function safeCall(fn, ...)
-    local ok, result = pcall(fn, ...)
-    return ok and result or nil
+    local ok, r = pcall(fn, ...)
+    return ok and r or nil
 end
 
-local function formatNumber(value)
-    value = tonumber(value) or 0
-    if value >= 1e12 then return string.format("%.1fT", value / 1e12)
-    elseif value >= 1e9 then return string.format("%.1fB", value / 1e9)
-    elseif value >= 1e6 then return string.format("%.1fM", value / 1e6)
-    elseif value >= 1e3 then return string.format("%.0fK", value / 1e3) end
-    return tostring(math.floor(value))
+local function formatNumber(v)
+    v = tonumber(v) or 0
+    if v >= 1e12 then return string.format("%.1fT", v/1e12)
+    elseif v >= 1e9 then return string.format("%.1fB", v/1e9)
+    elseif v >= 1e6 then return string.format("%.1fM", v/1e6)
+    elseif v >= 1e3 then return string.format("%.0fK", v/1e3) end
+    return tostring(math.floor(v))
 end
 
-local function sanitizeKey(value)
-    if value == nil then return nil end
-    if typeof(value) == "string" then
-        local t = value:gsub("^%s+", ""):gsub("%s+$", "")
+local function sanitizeKey(v)
+    if v == nil then return nil end
+    if typeof(v) == "string" then
+        local t = v:gsub("^%s+",""):gsub("%s+$","")
         return t ~= "" and t:lower() or nil
-    elseif typeof(value) == "number" then return tostring(value):lower() end
+    elseif typeof(v) == "number" then return tostring(v):lower() end
     return nil
 end
 
--- Build lookup
+local function w2s(p)
+    local v, on = Camera:WorldToViewportPoint(p)
+    return V2(v.X, v.Y), on, v.Z
+end
+
+-- Lookup tables
 local animalsLookup = {}
-for key, entry in pairs(AnimalsDataModule) do
-    if typeof(key) == "string" then animalsLookup[key:lower()] = entry end
-    if entry and entry.DisplayName then animalsLookup[entry.DisplayName:lower()] = entry end
+for k, e in pairs(AnimalsDataModule) do
+    if typeof(k) == "string" then animalsLookup[k:lower()] = e end
+    if e and e.DisplayName then animalsLookup[e.DisplayName:lower()] = e end
 end
 
 local mutationMultipliers = {}
-for name, data in pairs(MutationsDataModule) do
-    mutationMultipliers[name] = 1 + (data.Modifier or 0)
+for n, d in pairs(MutationsDataModule) do
+    mutationMultipliers[n] = 1 + (d.Modifier or 0)
 end
 
--- State
-local state = {
+-- ==================== COLORS ====================
+local COLORS = {
+    box      = C3(50, 180, 255),  -- Cyan blue
+    name     = C3(255, 255, 255), -- White
+    money    = C3(80, 255, 120),  -- Green
+    tracer   = C3(50, 180, 255),  -- Cyan blue
+    wire     = C3(130, 90, 255),  -- Purple
+    bestBox  = C3(255, 200, 50),  -- Gold
+    bestName = C3(255, 220, 80),  -- Gold text
+    bestMoney= C3(255, 180, 50),  -- Gold money
+}
+
+-- ==================== STATE ====================
+local S = {
     enabled = false,
+    boxEnabled = false,
+    nameEnabled = false,
+    tracersEnabled = false,
+    moneyEnabled = false,
+    wireframeEnabled = false,
     mostExpensiveOnly = false,
-    tracked = {},
+    tracked = {},       -- stand -> visual meta
     knownStands = {},
     standConns = {},
     connections = {},
     podiumsConns = {},
     baseConns = {},
-    boundPlots = nil,
-    queue = {},
-    queueSet = {},
-    forceSet = {},
-    queueHead = 1,
-    queueTail = 0,
-    refreshList = {},
-    refreshIndex = 1,
-    refreshAccumulator = 0,
-    refreshInterval = 3,
-    refreshBatch = 6,
-    standUpdateInterval = 2,
-    queueBudget = 6,
-    frameBudget = 0.003,
-    bestDirty = false,
-    lastBestRefresh = 0,
-    accentColor = Color3.fromRGB(50, 130, 250),
-    frameColor = Color3.fromRGB(16, 18, 24),
-    textColor = Color3.fromRGB(230, 235, 240),
     baseChannelCache = {},
-    bestMeta = nil,
-    beam = nil,
-    beamAttachment0 = nil,
+    boundPlots = nil,
+    queue = {}, queueSet = {}, forceSet = {},
+    queueHead = 1, queueTail = 0,
+    refreshList = {}, refreshIndex = 1,
+    refreshAccumulator = 0, refreshInterval = 3, refreshBatch = 6,
+    standUpdateInterval = 2, queueBudget = 6, frameBudget = 0.003,
+    bestStand = nil, bestIncome = -1,
 }
 
+-- ==================== DRAWING FACTORY ====================
+local function makeDrawings()
+    local d = {}
+
+    -- Box (4 lines)
+    d.box = {}
+    for i = 1, 4 do
+        local l = Drawing.new("Line")
+        l.Visible = false; l.Color = COLORS.box; l.Thickness = 1.5
+        d.box[i] = l
+    end
+
+    -- Box corner accents (8 short lines for corners)
+    d.corners = {}
+    for i = 1, 8 do
+        local l = Drawing.new("Line")
+        l.Visible = false; l.Color = COLORS.box; l.Thickness = 2
+        d.corners[i] = l
+    end
+
+    -- Name text
+    d.name = Drawing.new("Text")
+    d.name.Visible = false; d.name.Color = COLORS.name
+    d.name.Size = 15; d.name.Center = true; d.name.Outline = true
+    d.name.Font = 3 -- Plex (modern)
+
+    -- Money/s text
+    d.money = Drawing.new("Text")
+    d.money.Visible = false; d.money.Color = COLORS.money
+    d.money.Size = 13; d.money.Center = true; d.money.Outline = true
+    d.money.Font = 3
+
+    -- Tracer line
+    d.tracer = Drawing.new("Line")
+    d.tracer.Visible = false; d.tracer.Color = COLORS.tracer; d.tracer.Thickness = 1
+
+    -- Wireframe (12 lines for 3D bounding box)
+    d.wire = {}
+    for i = 1, 12 do
+        local l = Drawing.new("Line")
+        l.Visible = false; l.Color = COLORS.wire; l.Thickness = 1
+        d.wire[i] = l
+    end
+
+    -- Best indicator (diamond/star above name)
+    d.bestTag = Drawing.new("Text")
+    d.bestTag.Visible = false; d.bestTag.Color = COLORS.bestName
+    d.bestTag.Size = 12; d.bestTag.Center = true; d.bestTag.Outline = true
+    d.bestTag.Font = 3; d.bestTag.Text = "★ BEST ★"
+
+    return d
+end
+
+local function destroyDrawings(d)
+    if not d then return end
+    pcall(function()
+        for _, l in ipairs(d.box or {}) do l:Remove() end
+        for _, l in ipairs(d.corners or {}) do l:Remove() end
+        for _, l in ipairs(d.wire or {}) do l:Remove() end
+        if d.name then d.name:Remove() end
+        if d.money then d.money:Remove() end
+        if d.tracer then d.tracer:Remove() end
+        if d.bestTag then d.bestTag:Remove() end
+    end)
+end
+
+local function hideDrawings(d)
+    if not d then return end
+    pcall(function()
+        for _, l in ipairs(d.box or {}) do l.Visible = false end
+        for _, l in ipairs(d.corners or {}) do l.Visible = false end
+        for _, l in ipairs(d.wire or {}) do l.Visible = false end
+        if d.name then d.name.Visible = false end
+        if d.money then d.money.Visible = false end
+        if d.tracer then d.tracer.Visible = false end
+        if d.bestTag then d.bestTag.Visible = false end
+    end)
+end
+
+-- ==================== INCOME CALCULATION ====================
+local function normalizeTraits(traits)
+    if typeof(traits) == "table" then
+        if traits[1] then return traits end
+        local l = {}; for _, v in pairs(traits) do table.insert(l, v) end; return l
+    end
+    if typeof(traits) == "string" and traits ~= "" then
+        local p = safeCall(function() return HttpService:JSONDecode(traits) end)
+        if typeof(p) == "table" then return normalizeTraits(p) end
+        return {traits}
+    end
+    return nil
+end
+
+local function readMutation(c)
+    if not c then return nil end
+    local v = c:GetAttribute("Mutation") or c:GetAttribute("Mut")
+    if v ~= nil then return v end
+    local ch = c:FindFirstChild("Mutation") or c:FindFirstChild("Mut")
+    return ch and ch.Value or nil
+end
+
+local function readTraits(c)
+    if not c then return nil end
+    local t = normalizeTraits(c:GetAttribute("Traits"))
+    if t then return t end
+    local col = {}
+    for i = 1, 4 do
+        local k = "Trait"..i
+        local v = c:GetAttribute(k)
+        if v then table.insert(col, v) else
+            local ch = c:FindFirstChild(k)
+            if ch and ch.Value then table.insert(col, ch.Value) end
+        end
+    end
+    return #col > 0 and col or nil
+end
+
+local function getMutTraitsModel(model)
+    if not model then return nil, nil end
+    local mut = readMutation(model)
+    local traits = readTraits(model)
+    if not mut then
+        local f = model:FindFirstChild("MutationFolder") or model:FindFirstChild("Mutations")
+        if f then for _, ch in ipairs(f:GetChildren()) do
+            if ch:IsA("StringValue") and ch.Value ~= "" then mut = ch.Value; break end
+        end end
+    end
+    if not traits then
+        local tf = model:FindFirstChild("Traits") or model:FindFirstChild("TraitsFolder")
+        if tf then local l = {}; for _, ch in ipairs(tf:GetChildren()) do
+            if ch:IsA("StringValue") and ch.Value ~= "" then table.insert(l, ch.Value) end
+        end; if #l > 0 then traits = l end end
+    end
+    return mut, normalizeTraits(traits)
+end
+
+local function calcMultiplier(mut, traits)
+    local ms, c = {}, 0
+    table.insert(ms, (mut and mutationMultipliers[mut]) or 1); c = c + 1
+    if typeof(traits) == "table" then
+        for _, t in ipairs(traits) do
+            local info = TraitsDataModule[t]
+            if info then table.insert(ms, 1 + (info.MultiplierModifier or 0)); c = c + 1 end
+        end
+    end
+    if c == 0 then return 1 end
+    local sum = 0; for _, m in ipairs(ms) do sum = sum + m end
+    local total = sum - (c - 1); return total < 1 and 1 or total
+end
+
+local function safePlyMult(owner)
+    if not AnimalsSharedModule then return 1 end
+    local ok, gs = pcall(function() return require(sharedFolder:WaitForChild("Game")) end)
+    if not ok or not gs or type(gs.GetPlayerCashMultiplayer) ~= "function" then return 1 end
+    local o2, m = pcall(gs.GetPlayerCashMultiplayer, gs, owner)
+    return o2 and tonumber(m) or 1
+end
+
+local function getAttrNum(c, keys)
+    for _, k in ipairs(keys) do
+        local v = c:GetAttribute(k)
+        if v then local n = tonumber(v); if n then return n end end
+        local ch = c:FindFirstChild(k)
+        if ch and ch.Value then local n = tonumber(ch.Value); if n then return n end end
+    end; return nil
+end
+
+local function computeGen(idx, mut, traits, owner)
+    local e = idx and animalsLookup[sanitizeKey(idx) or ""]
+    if not e then return 0 end
+    local bg = e.Generation or ((e.Price or 0) * (GameDataModule.Game and GameDataModule.Game.AnimalGanerationModifier or 0))
+    local m = calcMultiplier(mut, traits)
+    local sleepy = false
+    if typeof(traits) == "table" then for _, t in ipairs(traits) do if t == "Sleepy" then sleepy = true; break end end end
+    local g = bg * m; if sleepy then g = g * 0.5 end
+    if owner then g = g * safePlyMult(owner) end
+    return math.max(0, math.floor(g + 0.5))
+end
+
+local function computeIncome(idx, mut, traits, owner, stand, model, entry)
+    entry = entry or (idx and animalsLookup[sanitizeKey(idx) or ""])
+    if owner and typeof(owner) == "table" and owner.UserId then
+        owner = Players:GetPlayerByUserId(owner.UserId) or owner
+    end
+    local mm, mt = getMutTraitsModel(model)
+    mut = mut or mm; traits = traits or mt or readTraits(stand)
+    local inc = (model and getAttrNum(model, {"IncomePerSecond","Income","Generation","Gen"}))
+        or (stand and getAttrNum(stand, {"IncomePerSecond","Income","Generation","Gen"}))
+    if (not inc or inc == 0) and AnimalsSharedModule and AnimalsSharedModule.GetGeneration and idx then
+        inc = safeCall(AnimalsSharedModule.GetGeneration, AnimalsSharedModule, idx, mut, traits, owner)
+    end
+    if (not inc or inc == 0) and idx then inc = computeGen(idx, mut, traits, owner) end
+    if (not inc or inc == 0) and entry and entry.Generation then inc = entry.Generation end
+    return inc or 0
+end
+
+-- ==================== STAND DISCOVERY ====================
 local function isLocalOwner(owner)
     if not owner then return false end
     if owner == LOCAL_PLAYER then return true end
@@ -114,220 +325,6 @@ local function isLocalOwner(owner)
     return false
 end
 
-local function destroyBeam()
-    if state.beam then state.beam:Destroy(); state.beam = nil end
-    if state.beamAttachment0 then state.beamAttachment0:Destroy(); state.beamAttachment0 = nil end
-end
-
-local function updatePlayerAttachment()
-    local char = LOCAL_PLAYER and LOCAL_PLAYER.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then
-        if state.beamAttachment0 then state.beamAttachment0:Destroy(); state.beamAttachment0 = nil end
-        return
-    end
-    if state.beamAttachment0 and state.beamAttachment0.Parent == hrp then return end
-    if state.beamAttachment0 then state.beamAttachment0:Destroy(); state.beamAttachment0 = nil end
-    local att = Instance.new("Attachment")
-    att.Name = "BrainrotESPPivot"
-    att.Parent = hrp
-    state.beamAttachment0 = att
-    if state.beam then state.beam.Attachment0 = att end
-end
-
-if LOCAL_PLAYER then
-    LOCAL_PLAYER.CharacterAdded:Connect(function() task.wait(0.25); updatePlayerAttachment() end)
-    LOCAL_PLAYER.CharacterRemoving:Connect(function() updatePlayerAttachment() end)
-end
-
-local function ensureBeam()
-    if state.beam then return end
-    state.beam = Instance.new("Beam")
-    state.beam.Name = "BrainrotESPLaser"
-    state.beam.Width0 = 0.1; state.beam.Width1 = 0.1
-    state.beam.LightEmission = 0.4
-    state.beam.Color = ColorSequence.new(state.accentColor)
-    state.beam.Transparency = NumberSequence.new(0.1)
-    state.beam.FaceCamera = true; state.beam.Enabled = false
-    state.beam.Parent = Workspace
-    updatePlayerAttachment()
-end
-
-local function computeBestMeta()
-    local best, bestIncome = nil, -math.huge
-    for _, meta in pairs(state.tracked) do
-        local inc = meta.income or 0
-        if inc > bestIncome then bestIncome = inc; best = meta end
-    end
-    state.bestMeta = best
-    return best
-end
-
-local function setBeamTarget(meta)
-    if not state.mostExpensiveOnly or not state.enabled then
-        if state.beam then state.beam.Enabled = false end
-        return
-    end
-    ensureBeam(); updatePlayerAttachment()
-    if state.beam and state.beamAttachment0 and meta and meta.targetAttachment then
-        state.beam.Attachment0 = state.beamAttachment0
-        state.beam.Attachment1 = meta.targetAttachment
-        state.beam.Enabled = true
-    elseif state.beam then state.beam.Enabled = false end
-end
-
-local function setVisualVisibility(meta, visible)
-    if meta.highlight then meta.highlight.Enabled = visible end
-    if meta.billboard then meta.billboard.Enabled = visible end
-end
-
-local function refreshMostExpensiveVisibility()
-    local best = computeBestMeta()
-    if not state.mostExpensiveOnly then
-        for _, meta in pairs(state.tracked) do setVisualVisibility(meta, state.enabled) end
-        setBeamTarget(nil); return
-    end
-    for _, meta in pairs(state.tracked) do
-        setVisualVisibility(meta, best and meta == best and state.enabled)
-    end
-    setBeamTarget(best)
-end
-
--- Trait/mutation helpers
-local function normalizeTraits(traits)
-    if typeof(traits) == "table" then
-        if traits[1] then return traits end
-        local list = {}
-        for _, v in pairs(traits) do table.insert(list, v) end
-        return list
-    end
-    if typeof(traits) == "string" and traits ~= "" then
-        local parsed = safeCall(function() return HttpService:JSONDecode(traits) end)
-        if typeof(parsed) == "table" then return normalizeTraits(parsed) end
-        return { traits }
-    end
-    return nil
-end
-
-local function readMutation(container)
-    if not container then return nil end
-    local val = container:GetAttribute("Mutation") or container:GetAttribute("Mut")
-    if val ~= nil then return val end
-    local child = container:FindFirstChild("Mutation") or container:FindFirstChild("Mut")
-    return child and child.Value or nil
-end
-
-local function readTraits(container)
-    if not container then return nil end
-    local traits = normalizeTraits(container:GetAttribute("Traits"))
-    if traits then return traits end
-    local collected = {}
-    for i = 1, 4 do
-        local key = "Trait" .. i
-        local val = container:GetAttribute(key)
-        if val then table.insert(collected, val) else
-            local child = container:FindFirstChild(key)
-            if child and child.Value then table.insert(collected, child.Value) end
-        end
-    end
-    return #collected > 0 and collected or nil
-end
-
-local function getMutationAndTraitsFromModel(model)
-    if not model then return nil, nil end
-    local mutation = readMutation(model)
-    local traits = readTraits(model)
-    if not mutation then
-        local folder = model:FindFirstChild("MutationFolder") or model:FindFirstChild("Mutations")
-        if folder then
-            for _, child in ipairs(folder:GetChildren()) do
-                if child:IsA("StringValue") and child.Value ~= "" then mutation = child.Value; break end
-            end
-        end
-    end
-    if not traits then
-        local tFolder = model:FindFirstChild("Traits") or model:FindFirstChild("TraitsFolder")
-        if tFolder then
-            local list = {}
-            for _, child in ipairs(tFolder:GetChildren()) do
-                if child:IsA("StringValue") and child.Value ~= "" then table.insert(list, child.Value) end
-            end
-            if #list > 0 then traits = list end
-        end
-    end
-    return mutation, normalizeTraits(traits)
-end
-
-local function calculateMultiplier(mutation, traits)
-    local mults, count = {}, 0
-    if mutation and mutationMultipliers[mutation] then
-        table.insert(mults, mutationMultipliers[mutation]); count = count + 1
-    else table.insert(mults, 1); count = count + 1 end
-    if typeof(traits) == "table" then
-        for _, trait in ipairs(traits) do
-            local info = TraitsDataModule[trait]
-            if info then table.insert(mults, 1 + (info.MultiplierModifier or 0)); count = count + 1 end
-        end
-    end
-    if count == 0 then return 1 end
-    local sum = 0
-    for _, m in ipairs(mults) do sum = sum + m end
-    local total = sum - (count - 1)
-    return total < 1 and 1 or total
-end
-
-local function safePlayerMultiplier(owner)
-    if not AnimalsSharedModule then return 1 end
-    local okGame, gameShared = pcall(function() return require(sharedFolder:WaitForChild("Game")) end)
-    if not okGame or not gameShared or type(gameShared.GetPlayerCashMultiplayer) ~= "function" then return 1 end
-    local ok, mult = pcall(gameShared.GetPlayerCashMultiplayer, gameShared, owner)
-    return ok and tonumber(mult) or 1
-end
-
-local function getAttrNumber(container, keys)
-    for _, key in ipairs(keys) do
-        local val = container:GetAttribute(key)
-        if val then local n = tonumber(val); if n then return n end end
-        local child = container:FindFirstChild(key)
-        if child and child.Value then local n = tonumber(child.Value); if n then return n end end
-    end
-    return nil
-end
-
-local function computeGeneration(index, mutation, traits, owner)
-    local entry = index and animalsLookup[sanitizeKey(index) or ""]
-    if not entry then return 0 end
-    local baseGen = entry.Generation or ((entry.Price or 0) * (GameDataModule.Game and GameDataModule.Game.AnimalGanerationModifier or 0))
-    local mult = calculateMultiplier(mutation, traits)
-    local sleepy = false
-    if typeof(traits) == "table" then
-        for _, t in ipairs(traits) do if t == "Sleepy" then sleepy = true; break end end
-    end
-    local gen = baseGen * mult
-    if sleepy then gen = gen * 0.5 end
-    if owner then gen = gen * safePlayerMultiplier(owner) end
-    return math.max(0, math.floor(gen + 0.5))
-end
-
-local function computeIncome(index, mutation, traits, owner, stand, model, entry)
-    entry = entry or (index and animalsLookup[sanitizeKey(index) or ""])
-    if owner and typeof(owner) == "table" and owner.UserId then
-        owner = Players:GetPlayerByUserId(owner.UserId) or owner
-    end
-    local modelMut, modelTraits = getMutationAndTraitsFromModel(model)
-    mutation = mutation or modelMut
-    traits = traits or modelTraits or readTraits(stand)
-    local income = (model and getAttrNumber(model, {"IncomePerSecond","Income","Generation","Gen"}))
-        or (stand and getAttrNumber(stand, {"IncomePerSecond","Income","Generation","Gen"}))
-    if (not income or income == 0) and AnimalsSharedModule and AnimalsSharedModule.GetGeneration and index then
-        income = safeCall(AnimalsSharedModule.GetGeneration, AnimalsSharedModule, index, mutation, traits, owner)
-    end
-    if (not income or income == 0) and index then income = computeGeneration(index, mutation, traits, owner) end
-    if (not income or income == 0) and entry and entry.Generation then income = entry.Generation end
-    return income or 0
-end
-
--- Stand/podium discovery
 local function getPlotsFolder() return Workspace:FindFirstChild("Plots") end
 
 local function getStandBase(stand)
@@ -345,20 +342,19 @@ local function getValidStandBase(stand)
         if not base:FindFirstChild("PlotSign") then return nil end
         return base
     end
-    if base:FindFirstChild("AnimalPodiums") then return base end
-    return nil
+    return base:FindFirstChild("AnimalPodiums") and base or nil
 end
 
-local function findBrainrotModelOnStand(stand)
+local function findBrainrotOnStand(stand)
     if not stand or not stand.Parent then return nil end
     for _, desc in ipairs(stand:GetDescendants()) do
         if desc:IsA("Model") then
             local root = desc:FindFirstChild("RootPart") or desc:FindFirstChild("HumanoidRootPart") or desc.PrimaryPart
             if root then
-                local lookup = sanitizeKey(desc.Name)
-                local idxAttr = sanitizeKey(desc:GetAttribute("Index") or desc:GetAttribute("Animal") or desc:GetAttribute("Brainrot"))
-                local hasIncome = desc:FindFirstChild("Income") or desc:FindFirstChild("Generation") or desc:GetAttribute("IncomePerSecond")
-                if (lookup and animalsLookup[lookup]) or (idxAttr and animalsLookup[idxAttr]) or hasIncome
+                local lk = sanitizeKey(desc.Name)
+                local ia = sanitizeKey(desc:GetAttribute("Index") or desc:GetAttribute("Animal") or desc:GetAttribute("Brainrot"))
+                local hasInc = desc:FindFirstChild("Income") or desc:FindFirstChild("Generation") or desc:GetAttribute("IncomePerSecond")
+                if (lk and animalsLookup[lk]) or (ia and animalsLookup[ia]) or hasInc
                     or desc:GetAttribute("Mutation") or desc:GetAttribute("Traits") then
                     return desc, root
                 end
@@ -368,58 +364,49 @@ local function findBrainrotModelOnStand(stand)
     return nil
 end
 
-local function getStandRootPart(stand)
-    local model, root = findBrainrotModelOnStand(stand)
+local function getStandRoot(stand)
+    local model, root = findBrainrotOnStand(stand)
     if model then
         root = root or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
         if root then return model, root end
     end
     local base = stand:FindFirstChild("Base")
-    if base then
-        local spawn = base:FindFirstChild("Spawn")
-        if spawn and spawn:IsA("BasePart") then return nil, spawn end
-    end
+    if base then local sp = base:FindFirstChild("Spawn")
+        if sp and sp:IsA("BasePart") then return nil, sp end end
     return nil, stand.PrimaryPart or stand:FindFirstChildWhichIsA("BasePart", true)
 end
 
 local function getStandSlot(stand)
     if not stand then return nil end
-    local n = tonumber(stand.Name)
-    if n then return n end
+    local n = tonumber(stand.Name); if n then return n end
     return tonumber(stand:GetAttribute("Slot") or stand:GetAttribute("Index"))
 end
 
 local function getBaseChannel(base)
     if not base then return nil end
-    if state.baseChannelCache[base] then return state.baseChannelCache[base] end
-    local channel = nil
+    if S.baseChannelCache[base] then return S.baseChannelCache[base] end
+    local ch = nil
     if Synchronizer then
-        channel = safeCall(function() return Synchronizer:Get(base.Name) end)
+        ch = safeCall(function() return Synchronizer:Get(base.Name) end)
             or safeCall(function() return Synchronizer:Wait(base.Name) end)
     end
-    state.baseChannelCache[base] = channel
-    return channel
+    S.baseChannelCache[base] = ch; return ch
 end
 
-local function resolveBrainrotName(stand, model, index)
-    if index then
-        local key = sanitizeKey(index)
-        local entry = key and animalsLookup[key]
-        if entry then return entry.DisplayName or index end
-        return typeof(index) == "string" and index or tostring(index)
+local function resolveName(stand, model, idx)
+    if idx then
+        local k = sanitizeKey(idx); local e = k and animalsLookup[k]
+        if e then return e.DisplayName or idx end
+        return typeof(idx) == "string" and idx or tostring(idx)
     end
-    if stand then
-        local attr = stand:GetAttribute("Animal") or stand:GetAttribute("Brainrot") or stand:GetAttribute("Pet")
-        if attr and attr ~= "" then return attr end
-    end
-    if model then return model.Name end
-    return "Brainrot"
+    if stand then local a = stand:GetAttribute("Animal") or stand:GetAttribute("Brainrot") or stand:GetAttribute("Pet")
+        if a and a ~= "" then return a end end
+    return model and model.Name or "Brainrot"
 end
 
-local function buildStandBrainrotInfo(stand)
+local function buildStandInfo(stand)
     if not stand or not stand.Parent then return nil end
-    local base = getValidStandBase(stand)
-    if not base then return nil end
+    local base = getValidStandBase(stand); if not base then return nil end
     local channel = getBaseChannel(base)
     local slot = getStandSlot(stand)
     local animalData
@@ -427,296 +414,385 @@ local function buildStandBrainrotInfo(stand)
         local animals = channel:Get("AnimalList") or channel:Get("AnimalPodiums")
         animalData = animals and animals[slot]
     end
-    local model, root = getStandRootPart(stand)
-    if not root then return nil end
+    local model, root = getStandRoot(stand); if not root then return nil end
     local owner = channel and channel:Get("Owner")
     if isLocalOwner(owner) or isLocalOwner(base:GetAttribute("Owner"))
-        or isLocalOwner(base:GetAttribute("OwnerName")) or isLocalOwner(base:GetAttribute("PlacedBy")) then
-        return nil
-    end
-    local mutation = (animalData and (animalData.Mutation or animalData.Mut)) or readMutation(model) or readMutation(stand)
+        or isLocalOwner(base:GetAttribute("OwnerName")) or isLocalOwner(base:GetAttribute("PlacedBy")) then return nil end
+    local mut = (animalData and (animalData.Mutation or animalData.Mut)) or readMutation(model) or readMutation(stand)
     local traits = normalizeTraits(animalData and animalData.Traits) or readTraits(model) or readTraits(stand)
-    local index = animalData and (animalData.Index or animalData.Animal or animalData.Name)
+    local idx = animalData and (animalData.Index or animalData.Animal or animalData.Name)
         or (stand:GetAttribute("Animal") or stand:GetAttribute("Brainrot"))
         or (model and model:GetAttribute("Animal")) or (model and model.Name) or stand.Name
-    local resolvedName = resolveBrainrotName(stand, model, index)
-    local key = sanitizeKey(index) or sanitizeKey(resolvedName)
-    local entry = key and animalsLookup[key]
-    local moneyValue = computeIncome(index, mutation, traits, owner, stand, model, entry)
-    if not model and moneyValue <= 0 then return nil end
-    return { stand = stand, base = base, model = model, root = root, name = resolvedName, moneyValue = moneyValue }
+    local name = resolveName(stand, model, idx)
+    local k = sanitizeKey(idx) or sanitizeKey(name)
+    local entry = k and animalsLookup[k]
+    local income = computeIncome(idx, mut, traits, owner, stand, model, entry)
+    if not model and income <= 0 then return nil end
+    return { stand=stand, base=base, model=model, root=root, name=name, income=income }
 end
 
--- Visual creation
-local function createStandVisual(info)
-    local adornee = info.root
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "BrainrotESPHL"
-    highlight.FillColor = state.accentColor
-    highlight.FillTransparency = 0.12
-    highlight.OutlineColor = Color3.new(state.accentColor.R*0.45, state.accentColor.G*0.45, state.accentColor.B*0.45)
-    highlight.OutlineTransparency = 0.25
-    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    highlight.Enabled = true
-    highlight.Adornee = info.model or adornee
-    highlight.Parent = info.model or adornee or info.stand
-
-    local bb = Instance.new("BillboardGui")
-    bb.Name = "BrainrotESPBB"
-    bb.AlwaysOnTop = true
-    bb.Size = UDim2.new(0, 170, 0, 34)
-    bb.StudsOffsetWorldSpace = Vector3.new(0, 5.5, 0)
-    bb.MaxDistance = 1200; bb.LightInfluence = 0; bb.Enabled = true
-    bb.Adornee = adornee; bb.Parent = adornee
-
-    local frame = Instance.new("Frame")
-    frame.BackgroundColor3 = state.frameColor; frame.BackgroundTransparency = 0.45
-    frame.BorderSizePixel = 0; frame.Size = UDim2.new(1,0,1,0); frame.Parent = bb
-
-    local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0,6); corner.Parent = frame
-    local stroke = Instance.new("UIStroke")
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Thickness = 1; stroke.Color = state.accentColor; stroke.Transparency = 0.15; stroke.Parent = frame
-
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.BackgroundTransparency = 1; nameLabel.Size = UDim2.new(1,-8,0,18)
-    nameLabel.Position = UDim2.new(0,4,0,3); nameLabel.Font = Enum.Font.GothamBold
-    nameLabel.TextColor3 = state.textColor; nameLabel.TextStrokeTransparency = 0.4
-    nameLabel.TextSize = 15; nameLabel.TextXAlignment = Enum.TextXAlignment.Center
-    nameLabel.TextWrapped = true; nameLabel.Parent = frame
-
-    local rateLabel = Instance.new("TextLabel")
-    rateLabel.BackgroundTransparency = 1; rateLabel.Size = UDim2.new(1,-8,0,14)
-    rateLabel.Position = UDim2.new(0,4,0,20); rateLabel.Font = Enum.Font.GothamBold
-    rateLabel.TextColor3 = Color3.fromRGB(255,255,255); rateLabel.TextStrokeTransparency = 0.3
-    rateLabel.TextSize = 13; rateLabel.TextXAlignment = Enum.TextXAlignment.Center
-    rateLabel.TextWrapped = true; rateLabel.Parent = frame
-
-    local att = Instance.new("Attachment"); att.Name = "BrainrotESPTarget"; att.Parent = adornee
-
-    return {
-        highlight = highlight, billboard = bb, frame = frame,
-        nameLabel = nameLabel, rateLabel = rateLabel,
-        targetAttachment = att, currentAdornee = adornee, stand = info.stand,
-    }
+-- ==================== RENDER ====================
+local function getModelBBox(model)
+    if not model then return nil, nil end
+    local cf, size = nil, nil
+    pcall(function() cf, size = model:GetBoundingBox() end)
+    return cf, size
 end
 
-local function clearStandVisual(stand)
-    local meta = state.tracked[stand]
+local function renderStand(meta)
+    local d = meta.drawings
+    local info = meta.info
+    if not d or not info or not info.root or not info.root.Parent then hideDrawings(d); return end
+
+    local isBest = S.mostExpensiveOnly and S.bestStand == info.stand
+
+    -- Position from root part
+    local pos = info.root.Position
+    local sv, onScreen = Camera:WorldToViewportPoint(pos)
+    if not onScreen then hideDrawings(d); return end
+
+    -- Check distance
+    local me = LOCAL_PLAYER.Character
+    local myR = me and me:FindFirstChild("HumanoidRootPart")
+    if not myR then hideDrawings(d); return end
+    if (pos - myR.Position).Magnitude > 1000 then hideDrawings(d); return end
+
+    -- If most expensive only, hide non-best
+    if S.mostExpensiveOnly and not isBest then hideDrawings(d); return end
+
+    -- Calc 2D box from model bounds
+    local cf, size = getModelBBox(info.model)
+    local h, w
+    if cf and size then
+        local top = Camera:WorldToViewportPoint((cf * CFrame.new(0, size.Y/2, 0)).Position)
+        local bot = Camera:WorldToViewportPoint((cf * CFrame.new(0, -size.Y/2, 0)).Position)
+        h = math.abs(bot.Y - top.Y)
+        h = math.max(h, 30)
+        w = h * 0.7
+    else
+        local tP = Camera:WorldToViewportPoint(pos + Vector3.new(0,2.5,0))
+        local bP = Camera:WorldToViewportPoint(pos - Vector3.new(0,1.5,0))
+        h = math.abs(bP.Y - tP.Y)
+        h = math.max(h, 30)
+        w = h * 0.6
+    end
+
+    local cx, cy = sv.X, sv.Y
+    local boxColor = isBest and COLORS.bestBox or COLORS.box
+
+    -- ===== BOX ESP =====
+    if S.boxEnabled then
+        local x1, y1 = cx - w/2, cy - h/2
+        local x2, y2 = cx + w/2, cy + h/2
+
+        d.box[1].From = V2(x1,y1); d.box[1].To = V2(x2,y1); d.box[1].Color = boxColor; d.box[1].Visible = true
+        d.box[2].From = V2(x1,y2); d.box[2].To = V2(x2,y2); d.box[2].Color = boxColor; d.box[2].Visible = true
+        d.box[3].From = V2(x1,y1); d.box[3].To = V2(x1,y2); d.box[3].Color = boxColor; d.box[3].Visible = true
+        d.box[4].From = V2(x2,y1); d.box[4].To = V2(x2,y2); d.box[4].Color = boxColor; d.box[4].Visible = true
+
+        -- Corner accents (short bold lines at corners)
+        local cLen = math.max(w * 0.2, 5)
+        -- Top-left
+        d.corners[1].From = V2(x1,y1); d.corners[1].To = V2(x1+cLen,y1); d.corners[1].Color = boxColor; d.corners[1].Visible = true
+        d.corners[2].From = V2(x1,y1); d.corners[2].To = V2(x1,y1+cLen); d.corners[2].Color = boxColor; d.corners[2].Visible = true
+        -- Top-right
+        d.corners[3].From = V2(x2,y1); d.corners[3].To = V2(x2-cLen,y1); d.corners[3].Color = boxColor; d.corners[3].Visible = true
+        d.corners[4].From = V2(x2,y1); d.corners[4].To = V2(x2,y1+cLen); d.corners[4].Color = boxColor; d.corners[4].Visible = true
+        -- Bottom-left
+        d.corners[5].From = V2(x1,y2); d.corners[5].To = V2(x1+cLen,y2); d.corners[5].Color = boxColor; d.corners[5].Visible = true
+        d.corners[6].From = V2(x1,y2); d.corners[6].To = V2(x1,y2-cLen); d.corners[6].Color = boxColor; d.corners[6].Visible = true
+        -- Bottom-right
+        d.corners[7].From = V2(x2,y2); d.corners[7].To = V2(x2-cLen,y2); d.corners[7].Color = boxColor; d.corners[7].Visible = true
+        d.corners[8].From = V2(x2,y2); d.corners[8].To = V2(x2,y2-cLen); d.corners[8].Color = boxColor; d.corners[8].Visible = true
+    else
+        for i=1,4 do d.box[i].Visible = false end
+        for i=1,8 do d.corners[i].Visible = false end
+    end
+
+    -- ===== NAME ESP =====
+    if S.nameEnabled then
+        d.name.Text = info.name or "Brainrot"
+        d.name.Color = isBest and COLORS.bestName or COLORS.name
+        d.name.Position = V2(cx, cy - h/2 - 18)
+        d.name.Visible = true
+    else
+        d.name.Visible = false
+    end
+
+    -- ===== BEST TAG =====
+    if isBest and (S.nameEnabled or S.boxEnabled) then
+        d.bestTag.Position = V2(cx, cy - h/2 - 32)
+        d.bestTag.Visible = true
+    else
+        d.bestTag.Visible = false
+    end
+
+    -- ===== MONEY PER/S =====
+    if S.moneyEnabled then
+        d.money.Text = "$" .. formatNumber(info.income) .. "/s"
+        d.money.Color = isBest and COLORS.bestMoney or COLORS.money
+        d.money.Position = V2(cx, cy + h/2 + 4)
+        d.money.Visible = true
+    else
+        d.money.Visible = false
+    end
+
+    -- ===== TRACERS =====
+    if S.tracersEnabled then
+        local ox = Camera.ViewportSize.X / 2
+        local oy = Camera.ViewportSize.Y
+        d.tracer.From = V2(ox, oy)
+        d.tracer.To = V2(cx, cy + h/2)
+        d.tracer.Color = isBest and COLORS.bestBox or COLORS.tracer
+        d.tracer.Visible = true
+    else
+        d.tracer.Visible = false
+    end
+
+    -- ===== WIREFRAME (3D bounding box) =====
+    if S.wireframeEnabled and cf and size then
+        local sx, sy, sz = size.X/2, size.Y/2, size.Z/2
+        local verts = {
+            (cf * CF(-sx,-sy,-sz)).Position, (cf * CF(sx,-sy,-sz)).Position,
+            (cf * CF(sx,-sy,sz)).Position,   (cf * CF(-sx,-sy,sz)).Position,
+            (cf * CF(-sx,sy,-sz)).Position,  (cf * CF(sx,sy,-sz)).Position,
+            (cf * CF(sx,sy,sz)).Position,    (cf * CF(-sx,sy,sz)).Position,
+        }
+        local edges = {
+            {1,2},{2,3},{3,4},{4,1}, -- bottom
+            {5,6},{6,7},{7,8},{8,5}, -- top
+            {1,5},{2,6},{3,7},{4,8}, -- verticals
+        }
+        local wCol = isBest and COLORS.bestBox or COLORS.wire
+        for i, e in ipairs(edges) do
+            local l = d.wire[i]
+            if l then
+                local a, oA, zA = w2s(verts[e[1]])
+                local b, oB, zB = w2s(verts[e[2]])
+                if (oA or oB) and zA > 0 and zB > 0 then
+                    l.From = a; l.To = b; l.Color = wCol; l.Visible = true
+                else l.Visible = false end
+            end
+        end
+    else
+        for i=1,12 do d.wire[i].Visible = false end
+    end
+end
+
+-- ==================== TRACKING ====================
+local function clearStand(stand)
+    local meta = S.tracked[stand]
     if not meta then return end
-    if meta.highlight then meta.highlight:Destroy() end
-    if meta.billboard then meta.billboard:Destroy() end
-    if meta.targetAttachment then meta.targetAttachment:Destroy() end
-    state.tracked[stand] = nil
-    if state.bestMeta == meta then computeBestMeta() end
-    state.bestDirty = true
+    destroyDrawings(meta.drawings)
+    S.tracked[stand] = nil
+    if S.bestStand == stand then S.bestStand = nil; S.bestIncome = -1 end
 end
 
 local function untrackStand(stand)
-    clearStandVisual(stand)
-    state.knownStands[stand] = nil; state.queueSet[stand] = nil; state.forceSet[stand] = nil
-    local conn = state.standConns[stand]
-    if conn then safeCall(function() conn:Disconnect() end) end
-    state.standConns[stand] = nil
+    clearStand(stand)
+    S.knownStands[stand] = nil; S.queueSet[stand] = nil; S.forceSet[stand] = nil
+    local c = S.standConns[stand]
+    if c then safeCall(function() c:Disconnect() end) end
+    S.standConns[stand] = nil
 end
 
-local function applyStandInfo(meta, info)
-    meta.income = info.moneyValue or 0; meta.root = info.root
-    meta.model = info.model; meta.base = info.base
-    meta.nameLabel.Text = info.name or "Brainrot"
-    meta.rateLabel.Text = string.format("$%s/sec", formatNumber(meta.income))
-    local adornee = info.root
-    if adornee and adornee ~= meta.currentAdornee then
-        meta.currentAdornee = adornee; meta.billboard.Adornee = adornee
-        meta.billboard.Parent = adornee; meta.targetAttachment.Parent = adornee
-    end
-    local ht = info.model or adornee
-    if ht then meta.highlight.Adornee = ht; meta.highlight.Parent = ht end
-end
-
-local function updateStandEsp(stand)
-    if not state.enabled then return end
-    local meta = state.tracked[stand]
+local function updateStand(stand)
+    if not S.enabled then return end
+    local meta = S.tracked[stand]
     local now = os.clock()
-    if meta and meta.nextUpdateAt and now < meta.nextUpdateAt then return end
-    local info = safeCall(buildStandBrainrotInfo, stand)
-    if not info then clearStandVisual(stand); return end
-    if not meta then meta = createStandVisual(info); state.tracked[stand] = meta end
-    applyStandInfo(meta, info)
-    meta.nextUpdateAt = now + state.standUpdateInterval
-    state.bestDirty = true
+    if meta and meta.nextUpdate and now < meta.nextUpdate then return end
+
+    local info = safeCall(buildStandInfo, stand)
+    if not info then clearStand(stand); return end
+
+    if not meta then
+        meta = { drawings = makeDrawings(), info = info }
+        S.tracked[stand] = meta
+    else
+        meta.info = info
+    end
+    meta.nextUpdate = now + S.standUpdateInterval
+
+    -- Track best
+    if info.income > S.bestIncome then
+        S.bestStand = stand; S.bestIncome = info.income
+    end
 end
 
-local function enqueueStand(stand, force)
+local function enqueue(stand, force)
     if not (stand and stand.Parent) then return end
-    if state.queueSet[stand] then if force then state.forceSet[stand] = true end; return end
-    state.queueSet[stand] = true
-    if force then state.forceSet[stand] = true end
-    state.queueTail = state.queueTail + 1; state.queue[state.queueTail] = stand
+    if S.queueSet[stand] then if force then S.forceSet[stand] = true end; return end
+    S.queueSet[stand] = true; if force then S.forceSet[stand] = true end
+    S.queueTail = S.queueTail + 1; S.queue[S.queueTail] = stand
 end
 
-local function dequeueStand()
-    if state.queueHead > state.queueTail then return nil end
-    local stand = state.queue[state.queueHead]; state.queue[state.queueHead] = nil
-    state.queueHead = state.queueHead + 1
-    if state.queueHead > state.queueTail then state.queueHead = 1; state.queueTail = 0 end
-    return stand
+local function dequeue()
+    if S.queueHead > S.queueTail then return nil end
+    local s = S.queue[S.queueHead]; S.queue[S.queueHead] = nil
+    S.queueHead = S.queueHead + 1
+    if S.queueHead > S.queueTail then S.queueHead = 1; S.queueTail = 0 end
+    return s
 end
 
 local function trackStand(stand)
     if not (stand and stand:IsA("Model") and stand.Parent) then return end
-    if state.knownStands[stand] then return end
-    state.knownStands[stand] = true
-    state.standConns[stand] = stand.AncestryChanged:Connect(function(_, parent)
-        if not parent then untrackStand(stand) end
-    end)
-    enqueueStand(stand, true)
+    if S.knownStands[stand] then return end
+    S.knownStands[stand] = true
+    S.standConns[stand] = stand.AncestryChanged:Connect(function(_, p) if not p then untrackStand(stand) end end)
+    enqueue(stand, true)
 end
 
 -- Podium/plot binding
-local function unbindPodiums(podiums)
-    local conns = state.podiumsConns[podiums]
-    if conns then for _, c in pairs(conns) do safeCall(function() c:Disconnect() end) end end
-    state.podiumsConns[podiums] = nil
-    if podiums then for _, s in ipairs(podiums:GetChildren()) do if s:IsA("Model") then untrackStand(s) end end end
+local function unbindPodiums(pod)
+    local cs = S.podiumsConns[pod]
+    if cs then for _, c in pairs(cs) do safeCall(function() c:Disconnect() end) end end
+    S.podiumsConns[pod] = nil
+    if pod then for _, s in ipairs(pod:GetChildren()) do if s:IsA("Model") then untrackStand(s) end end end
 end
 
-local function bindPodiums(podiums)
-    if not (podiums and podiums.Parent) or state.podiumsConns[podiums] then return end
-    for _, s in ipairs(podiums:GetChildren()) do if s:IsA("Model") then trackStand(s) end end
-    state.podiumsConns[podiums] = {
-        added = podiums.ChildAdded:Connect(function(c) if c:IsA("Model") then trackStand(c) end end),
-        removed = podiums.ChildRemoved:Connect(function(c) if c:IsA("Model") then untrackStand(c) end end),
-        ancestry = podiums.AncestryChanged:Connect(function(_, p) if not p then unbindPodiums(podiums) end end),
+local function bindPodiums(pod)
+    if not (pod and pod.Parent) or S.podiumsConns[pod] then return end
+    for _, s in ipairs(pod:GetChildren()) do if s:IsA("Model") then trackStand(s) end end
+    S.podiumsConns[pod] = {
+        a = pod.ChildAdded:Connect(function(c) if c:IsA("Model") then trackStand(c) end end),
+        r = pod.ChildRemoved:Connect(function(c) if c:IsA("Model") then untrackStand(c) end end),
+        d = pod.AncestryChanged:Connect(function(_,p) if not p then unbindPodiums(pod) end end),
     }
 end
 
 local function unbindBase(base)
-    local conns = state.baseConns[base]
-    if conns then for _, c in pairs(conns) do safeCall(function() c:Disconnect() end) end end
-    state.baseConns[base] = nil
-    local pod = base and base:FindFirstChild("AnimalPodiums")
-    if pod then unbindPodiums(pod) end
+    local cs = S.baseConns[base]
+    if cs then for _, c in pairs(cs) do safeCall(function() c:Disconnect() end) end end
+    S.baseConns[base] = nil
+    local pod = base and base:FindFirstChild("AnimalPodiums"); if pod then unbindPodiums(pod) end
 end
 
 local function bindBase(base)
-    if not (base and base.Parent) or state.baseConns[base] then return end
-    state.baseConns[base] = {
-        added = base.ChildAdded:Connect(function(c) if c.Name == "AnimalPodiums" then bindPodiums(c) end end),
-        ancestry = base.AncestryChanged:Connect(function(_, p) if not p then unbindBase(base) end end),
+    if not (base and base.Parent) or S.baseConns[base] then return end
+    S.baseConns[base] = {
+        a = base.ChildAdded:Connect(function(c) if c.Name == "AnimalPodiums" then bindPodiums(c) end end),
+        d = base.AncestryChanged:Connect(function(_,p) if not p then unbindBase(base) end end),
     }
-    local pod = base:FindFirstChild("AnimalPodiums")
-    if pod then bindPodiums(pod) end
+    local pod = base:FindFirstChild("AnimalPodiums"); if pod then bindPodiums(pod) end
 end
 
 local function unbindPlots(plots)
-    if state.connections.plotsAdd then safeCall(function() state.connections.plotsAdd:Disconnect() end); state.connections.plotsAdd = nil end
-    if state.connections.plotsRem then safeCall(function() state.connections.plotsRem:Disconnect() end); state.connections.plotsRem = nil end
-    for base in pairs(state.baseConns) do unbindBase(base) end
-    state.boundPlots = nil
+    if S.connections.pa then safeCall(function() S.connections.pa:Disconnect() end); S.connections.pa = nil end
+    if S.connections.pr then safeCall(function() S.connections.pr:Disconnect() end); S.connections.pr = nil end
+    for b in pairs(S.baseConns) do unbindBase(b) end
+    S.boundPlots = nil
 end
 
 local function bindPlots(plots)
-    if not plots or state.boundPlots == plots then return end
-    if state.boundPlots then unbindPlots(state.boundPlots) end
-    state.boundPlots = plots
-    for _, base in ipairs(plots:GetChildren()) do bindBase(base) end
-    state.connections.plotsAdd = plots.ChildAdded:Connect(function(c) bindBase(c) end)
-    state.connections.plotsRem = plots.ChildRemoved:Connect(function(c) unbindBase(c) end)
+    if not plots or S.boundPlots == plots then return end
+    if S.boundPlots then unbindPlots(S.boundPlots) end
+    S.boundPlots = plots
+    for _, b in ipairs(plots:GetChildren()) do bindBase(b) end
+    S.connections.pa = plots.ChildAdded:Connect(function(c) bindBase(c) end)
+    S.connections.pr = plots.ChildRemoved:Connect(function(c) unbindBase(c) end)
 end
 
 -- Main loop
 local function processQueue()
-    local now, start = os.clock(), os.clock()
-    local budget = state.queueBudget
+    local start = os.clock()
+    local budget = S.queueBudget
     while budget > 0 do
-        local stand = dequeueStand()
-        if not stand then break end
-        state.queueSet[stand] = nil
-        if state.forceSet[stand] then
-            state.forceSet[stand] = nil
-            local meta = state.tracked[stand]
-            if meta then meta.nextUpdateAt = 0 end
-        end
-        if stand.Parent then updateStandEsp(stand) else untrackStand(stand) end
+        local stand = dequeue(); if not stand then break end
+        S.queueSet[stand] = nil
+        if S.forceSet[stand] then S.forceSet[stand] = nil
+            local m = S.tracked[stand]; if m then m.nextUpdate = 0 end end
+        if stand.Parent then updateStand(stand) else untrackStand(stand) end
         budget = budget - 1
-        if (os.clock() - start) > state.frameBudget then break end
-    end
-    if state.bestDirty and (now - (state.lastBestRefresh or 0)) >= 0.5 then
-        refreshMostExpensiveVisibility()
-        state.bestDirty = false; state.lastBestRefresh = now
+        if (os.clock() - start) > S.frameBudget then break end
     end
 end
 
-local function heartbeatStep(dt)
-    if not state.enabled then return end
-    state.refreshAccumulator = (state.refreshAccumulator or 0) + dt
-    if state.refreshAccumulator >= state.refreshInterval then
-        state.refreshAccumulator = 0; state.refreshList = {}
-        for stand in pairs(state.knownStands) do state.refreshList[#state.refreshList+1] = stand end
-        state.refreshIndex = 1
+local function recomputeBest()
+    S.bestStand = nil; S.bestIncome = -1
+    for stand, meta in pairs(S.tracked) do
+        local inc = meta.info and meta.info.income or 0
+        if inc > S.bestIncome then S.bestIncome = inc; S.bestStand = stand end
     end
-    local batch = state.refreshBatch
-    while batch > 0 and state.refreshIndex <= #state.refreshList do
-        enqueueStand(state.refreshList[state.refreshIndex], false)
-        state.refreshIndex = state.refreshIndex + 1; batch = batch - 1
+end
+
+local function heartbeat(dt)
+    if not S.enabled then return end
+    Camera = Workspace.CurrentCamera
+
+    S.refreshAccumulator = (S.refreshAccumulator or 0) + dt
+    if S.refreshAccumulator >= S.refreshInterval then
+        S.refreshAccumulator = 0; S.refreshList = {}
+        for stand in pairs(S.knownStands) do S.refreshList[#S.refreshList+1] = stand end
+        S.refreshIndex = 1
+        recomputeBest()
+    end
+    local batch = S.refreshBatch
+    while batch > 0 and S.refreshIndex <= #S.refreshList do
+        enqueue(S.refreshList[S.refreshIndex], false)
+        S.refreshIndex = S.refreshIndex + 1; batch = batch - 1
     end
     processQueue()
+
+    -- Render all
+    for _, meta in pairs(S.tracked) do
+        pcall(renderStand, meta)
+    end
 end
 
--- Public API
+-- ==================== API ====================
 local API = {}
 
 function API:Init() end
 
 function API:Start()
-    if state.enabled then return end
-    state.enabled = true
-    state.queue = {}; state.queueSet = {}; state.forceSet = {}
-    state.refreshList = {}; state.knownStands = {}
-    state.queueHead = 1; state.queueTail = 0
-    state.refreshIndex = 1; state.refreshAccumulator = 0
-    state.bestDirty = true; state.lastBestRefresh = 0
+    if S.enabled then return end
+    S.enabled = true
+    S.queue = {}; S.queueSet = {}; S.forceSet = {}
+    S.refreshList = {}; S.knownStands = {}
+    S.queueHead = 1; S.queueTail = 0
+    S.refreshIndex = 1; S.refreshAccumulator = 0
+    S.bestStand = nil; S.bestIncome = -1
 
     local plots = getPlotsFolder()
     if plots then
         bindPlots(plots)
-        state.connections.wsAdd = Workspace.ChildAdded:Connect(function(c) if c.Name == "Plots" then bindPlots(c) end end)
-        state.connections.wsRem = Workspace.ChildRemoved:Connect(function(c) if c == state.boundPlots then unbindPlots(c) end end)
+        S.connections.wa = Workspace.ChildAdded:Connect(function(c) if c.Name == "Plots" then bindPlots(c) end end)
+        S.connections.wr = Workspace.ChildRemoved:Connect(function(c) if c == S.boundPlots then unbindPlots(c) end end)
     else
         for _, inst in ipairs(Workspace:GetDescendants()) do
             if inst.Name == "AnimalPodiums" then bindPodiums(inst) end
         end
-        state.connections.descAdd = Workspace.DescendantAdded:Connect(function(inst)
+        S.connections.da = Workspace.DescendantAdded:Connect(function(inst)
             if inst.Name == "AnimalPodiums" then bindPodiums(inst) end
         end)
     end
-    state.connections.heartbeat = RunService.Heartbeat:Connect(heartbeatStep)
+    S.connections.hb = RunService.Heartbeat:Connect(heartbeat)
 end
 
 function API:Stop()
-    if not state.enabled then return end
-    state.enabled = false
-    for _, conn in pairs(state.connections) do safeCall(function() conn:Disconnect() end) end
-    state.connections = {}
-    unbindPlots(state.boundPlots)
-    for pod in pairs(state.podiumsConns) do unbindPodiums(pod) end
-    for stand in pairs(state.knownStands) do untrackStand(stand) end
-    for stand in pairs(state.tracked) do clearStandVisual(stand) end
-    destroyBeam(); state.bestMeta = nil
+    if not S.enabled then return end
+    S.enabled = false
+    for _, conn in pairs(S.connections) do safeCall(function() conn:Disconnect() end) end
+    S.connections = {}
+    unbindPlots(S.boundPlots)
+    for pod in pairs(S.podiumsConns) do unbindPodiums(pod) end
+    for stand in pairs(S.knownStands) do untrackStand(stand) end
+    for stand in pairs(S.tracked) do clearStand(stand) end
 end
 
-function API:SetMostExpensive(val)
-    state.mostExpensiveOnly = val and true or false
-    state.bestDirty = true
-    refreshMostExpensiveVisibility()
-end
+function API:SetBox(v) S.boxEnabled = v end
+function API:SetName(v) S.nameEnabled = v end
+function API:SetTracers(v) S.tracersEnabled = v end
+function API:SetMoney(v) S.moneyEnabled = v end
+function API:SetWireframe(v) S.wireframeEnabled = v end
+function API:SetMostExpensive(v) S.mostExpensiveOnly = v and true or false; recomputeBest() end
 
 function API:GetBest()
-    local meta = computeBestMeta()
-    if not meta then return nil end
-    local target = meta.currentAdornee or meta.root
-    return target and target.Parent and target or nil
+    if not S.bestStand then recomputeBest() end
+    local meta = S.tracked[S.bestStand]
+    if not meta or not meta.info then return nil end
+    local t = meta.info.root
+    return t and t.Parent and t or nil
 end
 
 return API
