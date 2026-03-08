@@ -130,8 +130,11 @@ BrainrotEspSection:AddToggle({ Name = "Brainrot ESP", SaveKey = "sab_brainrot_es
         end
     end
 })
-BrainrotEspSection:AddToggle({ Name = "Skeleton", SaveKey = "sab_br_skel", Default = true,
-    Callback = function(s) safeBR(BrainrotESP.SetSkeleton, s) end
+BrainrotEspSection:AddToggle({ Name = "Highlight", SaveKey = "sab_br_highlight", Default = true,
+    Callback = function(s) safeBR(BrainrotESP.SetHighlight, s) end
+})
+BrainrotEspSection:AddColorPicker({ Name = "Highlight Color", SaveKey = "sab_br_hl_col", Default = Color3.fromRGB(50, 180, 255),
+    Callback = function(c) safeBR(BrainrotESP.SetHighlightColor, c) end
 })
 BrainrotEspSection:AddToggle({ Name = "Name ESP", SaveKey = "sab_br_name", Default = false,
     Callback = function(s) safeBR(BrainrotESP.SetName, s) end

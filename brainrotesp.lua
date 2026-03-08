@@ -80,7 +80,7 @@ end
 
 -- ==================== COLORS ====================
 local COLORS = {
-    skel     = C3(50, 180, 255),  -- Cyan blue
+    highlight = C3(50, 180, 255),  -- Cyan blue
     name     = C3(255, 255, 255), -- White
     money    = C3(80, 255, 120),  -- Green
     tracer   = C3(50, 180, 255),  -- Cyan blue
@@ -93,7 +93,8 @@ local COLORS = {
 local S = {
     enabled = false,
     nameEnabled = false,
-    skeletonEnabled = false,
+    highlightEnabled = false,
+    highlightColor = COLORS.highlight,
     tracersEnabled = false,
     moneyEnabled = false,
     mostExpensiveOnly = false,
@@ -117,13 +118,17 @@ local S = {
 local function makeDrawings()
     local d = {}
 
-    -- Skeleton lines (8 bones for R6: head-neck, shoulders, 2 arms, spine, hips, 2 legs)
-    d.skel = {}
-    for i = 1, 8 do
-        local l = Drawing.new("Line")
-        l.Visible = false; l.Color = COLORS.skel; l.Thickness = 2
-        d.skel[i] = l
-    end
+    -- Highlight instance
+    local hl = Instance.new("Highlight")
+    hl.FillTransparency = 0.5
+    hl.OutlineTransparency = 0
+    hl.OutlineColor = Color3.new(1, 1, 1)
+    hl.FillColor = S.highlightColor or COLORS.highlight
+    hl.Enabled = false
+    -- Try adding to CoreGui
+    local CoreGui = game:GetService("CoreGui")
+    pcall(function() hl.Parent = CoreGui end)
+    d.highlight = hl
 
     -- Name text
     d.name = Drawing.new("Text")
@@ -153,7 +158,7 @@ end
 local function destroyDrawings(d)
     if not d then return end
     pcall(function()
-        for _, l in ipairs(d.skel or {}) do l:Remove() end
+        if d.highlight then d.highlight:Destroy() end
         if d.name then d.name:Remove() end
         if d.money then d.money:Remove() end
         if d.tracer then d.tracer:Remove() end
@@ -164,7 +169,7 @@ end
 local function hideDrawings(d)
     if not d then return end
     pcall(function()
-        for _, l in ipairs(d.skel or {}) do l.Visible = false end
+        if d.highlight then d.highlight.Enabled = false end
         if d.name then d.name.Visible = false end
         if d.money then d.money.Visible = false end
         if d.tracer then d.tracer.Visible = false end
@@ -432,7 +437,7 @@ local function renderStand(meta)
     -- If most expensive only, hide non-best
     if S.mostExpensiveOnly and not isBest then hideDrawings(d); return end
 
-    local skelColor = isBest and COLORS.bestAccent or COLORS.skel
+    local hlColor = isBest and COLORS.bestAccent or S.highlightColor or COLORS.highlight
 
     -- Find character parts on the model for skeleton + head positioning
     local head, torso, lA, rA, lL, rL
@@ -518,46 +523,13 @@ local function renderStand(meta)
         d.tracer.Visible = false
     end
 
-    -- ===== SKELETON (R6 style) =====
-    if S.skeletonEnabled and torso and torso:IsA("BasePart") then
-        local tc = torso.CFrame
-        local neck = (tc * CF(0,1,0)).Position
-        local pelvis = (tc * CF(0,-1,0)).Position
-        local lS = (tc * CF(-1.5,1,0)).Position
-        local rS = (tc * CF(1.5,1,0)).Position
-        local lH = (tc * CF(-0.5,-1,0)).Position
-        local rH = (tc * CF(0.5,-1,0)).Position
-        local lHand = lA and lA:IsA("BasePart") and (lA.CFrame * CF(0,-1,0)).Position or lS
-        local rHand = rA and rA:IsA("BasePart") and (rA.CFrame * CF(0,-1,0)).Position or rS
-        local lFoot = lL and lL:IsA("BasePart") and (lL.CFrame * CF(0,-1,0)).Position or lH
-        local rFoot = rL and rL:IsA("BasePart") and (rL.CFrame * CF(0,-1,0)).Position or rH
-        local headPos = head and head:IsA("BasePart") and head.Position or neck
-
-        local joints = {
-            {headPos, neck},    -- head to neck
-            {lS, rS},           -- shoulders
-            {lS, lHand},        -- left arm
-            {rS, rHand},        -- right arm
-            {neck, pelvis},     -- spine
-            {lH, rH},           -- hips
-            {lH, lFoot},        -- left leg
-            {rH, rFoot},        -- right leg
-        }
-
-        for i, j in ipairs(joints) do
-            local l = d.skel[i]
-            if l then
-                local a, oA, zA = w2s(j[1])
-                local b, oB, zB = w2s(j[2])
-                if (oA or oB) and zA > 0 and zB > 0 then
-                    l.From = a; l.To = b; l.Color = skelColor; l.Visible = true
-                else
-                    l.Visible = false
-                end
-            end
-        end
+    -- ===== HIGHLIGHT =====
+    if S.highlightEnabled and model then
+        d.highlight.Adornee = model
+        d.highlight.FillColor = hlColor
+        d.highlight.Enabled = true
     else
-        for i = 1, 8 do d.skel[i].Visible = false end
+        d.highlight.Enabled = false
     end
 end
 
@@ -766,7 +738,15 @@ function API:Stop()
 end
 
 function API:SetName(v) S.nameEnabled = v end
-function API:SetSkeleton(v) S.skeletonEnabled = v end
+function API:SetHighlight(v) 
+    S.highlightEnabled = v 
+    if not v then
+        for _, m in pairs(S.tracked) do if m.drawings and m.drawings.highlight then m.drawings.highlight.Enabled = false end end
+    end
+end
+function API:SetHighlightColor(v)
+    if typeof(v) == "Color3" then S.highlightColor = v end
+end
 function API:SetTracers(v) S.tracersEnabled = v end
 function API:SetMoney(v) S.moneyEnabled = v end
 function API:SetMostExpensive(v) S.mostExpensiveOnly = v and true or false; recomputeBest() end
