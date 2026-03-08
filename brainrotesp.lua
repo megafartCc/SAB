@@ -316,19 +316,31 @@ local function getStandBase(stand)
     return stand:FindFirstAncestorOfClass("Model")
 end
 
+local function getStandSpawnPart(stand)
+    if not stand then return nil end
+    local base = stand:FindFirstChild("Base")
+    if base then
+        local sp = base:FindFirstChild("Spawn")
+        if sp and sp:IsA("BasePart") then
+            return sp
+        end
+    end
+    return stand.PrimaryPart or stand:FindFirstChildWhichIsA("BasePart", true)
+end
+
 local function getValidStandBase(stand)
     local plots = getPlotsFolder()
     local base = getStandBase(stand)
     if not base then return nil end
     if plots then
         if not base:IsDescendantOf(plots) then return nil end
-        if not base:FindFirstChild("PlotSign") then return nil end
+        if not base:FindFirstChild("AnimalPodiums") then return nil end
         return base
     end
     return base:FindFirstChild("AnimalPodiums") and base or nil
 end
 
-local function findBrainrotOnStand(stand)
+local function findBrainrotOnStand(stand, base, slot, animalData)
     if not stand or not stand.Parent then return nil end
     for _, desc in ipairs(stand:GetDescendants()) do
         if desc:IsA("Model") then
@@ -344,18 +356,66 @@ local function findBrainrotOnStand(stand)
             end
         end
     end
+
+    if not base then
+        return nil
+    end
+
+    local expectedIndex = animalData and (animalData.Index or animalData.Animal or animalData.Name)
+    local expectedKey = sanitizeKey(expectedIndex)
+    local spawnPart = getStandSpawnPart(stand)
+    local spawnPos = spawnPart and spawnPart.Position
+    local bestModel, bestRoot, bestScore
+
+    for _, child in ipairs(base:GetChildren()) do
+        if child:IsA("Model") and child ~= stand and child.Name ~= "AnimalPodiums" then
+            local root = child:FindFirstChild("RootPart") or child:FindFirstChild("HumanoidRootPart")
+                or child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart", true)
+            if root then
+                local modelKey = sanitizeKey(child.Name)
+                local idxKey = sanitizeKey(child:GetAttribute("Index") or child:GetAttribute("Animal") or child:GetAttribute("Brainrot"))
+                local hasMeta = child:GetAttribute("Mutation") or child:GetAttribute("Traits")
+                local hasIncome = child:FindFirstChild("Income", true) or child:FindFirstChild("Generation", true)
+                    or child:GetAttribute("IncomePerSecond")
+                local looksLikeAnimal = (modelKey and animalsLookup[modelKey]) or (idxKey and animalsLookup[idxKey])
+                    or hasMeta or hasIncome
+
+                if looksLikeAnimal then
+                    local score = 0
+                    if expectedKey and (expectedKey == idxKey or expectedKey == modelKey) then
+                        score = score + 100
+                    end
+
+                    if spawnPos then
+                        local dist = (root.Position - spawnPos).Magnitude
+                        score = score - math.min(dist, 50)
+                    end
+
+                    if not bestScore or score > bestScore then
+                        bestScore = score
+                        bestModel = child
+                        bestRoot = root
+                    end
+                end
+            end
+        end
+    end
+
+    if bestModel and bestRoot then
+        return bestModel, bestRoot
+    end
+
     return nil
 end
 
-local function getStandRoot(stand)
-    local model, root = findBrainrotOnStand(stand)
+local function getStandRoot(stand, base, slot, animalData)
+    local model, root = findBrainrotOnStand(stand, base, slot, animalData)
     if model then
         root = root or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
         if root then return model, root end
     end
-    local base = stand:FindFirstChild("Base")
-    if base then local sp = base:FindFirstChild("Spawn")
-        if sp and sp:IsA("BasePart") then return nil, sp end end
+    local sp = getStandSpawnPart(stand)
+    if sp then return nil, sp end
     return nil, stand.PrimaryPart or stand:FindFirstChildWhichIsA("BasePart", true)
 end
 
@@ -397,7 +457,7 @@ local function buildStandInfo(stand)
         local animals = channel:Get("AnimalList") or channel:Get("AnimalPodiums")
         animalData = animals and animals[slot]
     end
-    local model, root = getStandRoot(stand); if not root then return nil end
+    local model, root = getStandRoot(stand, base, slot, animalData); if not root then return nil end
     local owner = channel and channel:Get("Owner")
     if isLocalOwner(owner) or isLocalOwner(base:GetAttribute("Owner"))
         or isLocalOwner(base:GetAttribute("OwnerName")) or isLocalOwner(base:GetAttribute("PlacedBy")) then return nil end
@@ -524,8 +584,8 @@ local function renderStand(meta)
     end
 
     -- ===== HIGHLIGHT =====
-    if S.highlightEnabled and model then
-        d.highlight.Adornee = model
+    if S.highlightEnabled then
+        d.highlight.Adornee = model or info.stand or info.root
         d.highlight.FillColor = hlColor
         d.highlight.Enabled = true
     else
