@@ -715,9 +715,12 @@ local function heartbeat(dt)
     end
     processQueue()
 
-    -- Render all
-    for _, meta in pairs(S.tracked) do
-        pcall(renderStand, meta)
+    -- Render all (Throttled to run every 3rd frame to prevent Net VM Starvation)
+    S.renderFrameCount = (S.renderFrameCount or 0) + 1
+    if S.renderFrameCount % 3 == 0 then
+        for _, meta in pairs(S.tracked) do
+            pcall(renderStand, meta)
+        end
     end
 end
 
