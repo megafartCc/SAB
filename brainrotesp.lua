@@ -89,6 +89,15 @@ local COLORS = {
     bestMoney= C3(255, 180, 50),  -- Gold money
 }
 
+local VISUALS = {
+    nameTextSize = 20,
+    moneyTextSize = 18,
+    bestTextSize = 14,
+    nameOffsetY = 1.4,
+    bestOffsetY = 2.8,
+    moneyOffsetY = 1.0,
+}
+
 -- ==================== STATE ====================
 local S = {
     enabled = false,
@@ -133,13 +142,13 @@ local function makeDrawings()
     -- Name text
     d.name = Drawing.new("Text")
     d.name.Visible = false; d.name.Color = COLORS.name
-    d.name.Size = 15; d.name.Center = true; d.name.Outline = true
+    d.name.Size = VISUALS.nameTextSize; d.name.Center = true; d.name.Outline = true
     d.name.Font = 3 -- Plex (modern)
 
     -- Money/s text
     d.money = Drawing.new("Text")
     d.money.Visible = false; d.money.Color = COLORS.money
-    d.money.Size = 13; d.money.Center = true; d.money.Outline = true
+    d.money.Size = VISUALS.moneyTextSize; d.money.Center = true; d.money.Outline = true
     d.money.Font = 3
 
     -- Tracer line
@@ -149,8 +158,8 @@ local function makeDrawings()
     -- Best indicator
     d.bestTag = Drawing.new("Text")
     d.bestTag.Visible = false; d.bestTag.Color = COLORS.bestName
-    d.bestTag.Size = 12; d.bestTag.Center = true; d.bestTag.Outline = true
-    d.bestTag.Font = 3; d.bestTag.Text = "★ BEST ★"
+    d.bestTag.Size = VISUALS.bestTextSize; d.bestTag.Center = true; d.bestTag.Outline = true
+    d.bestTag.Font = 3; d.bestTag.Text = "[BEST]"
 
     return d
 end
@@ -510,14 +519,22 @@ local function renderStand(meta)
         rL = model:FindFirstChild("Right Leg") or model:FindFirstChild("RightUpperLeg")
     end
 
+    local anchorPos = pos
+    local halfHeight = 2
+    if model and model.Parent then
+        local ok, cf, size = pcall(model.GetBoundingBox, model)
+        if ok and typeof(cf) == "CFrame" and typeof(size) == "Vector3" then
+            anchorPos = cf.Position
+            halfHeight = math.max(1, size.Y * 0.5)
+        elseif head and head:IsA("BasePart") then
+            anchorPos = head.Position
+            halfHeight = math.max(1, head.Size.Y)
+        end
+    end
+
     -- ===== NAME ESP (above brainrot's head in world space) =====
     if S.nameEnabled then
-        local nameWorldPos
-        if head and head:IsA("BasePart") then
-            nameWorldPos = head.Position + Vector3.new(0, 3.0, 0)
-        else
-            nameWorldPos = pos + Vector3.new(0, 4.5, 0)
-        end
+        local nameWorldPos = anchorPos + Vector3.new(0, halfHeight + VISUALS.nameOffsetY, 0)
         local nameScreen, nameOn = w2s(nameWorldPos)
         if nameOn then
             d.name.Text = info.name or "Brainrot"
@@ -533,12 +550,7 @@ local function renderStand(meta)
 
     -- ===== BEST TAG (above name) =====
     if isBest and S.nameEnabled then
-        local tagPos
-        if head and head:IsA("BasePart") then
-            tagPos = head.Position + Vector3.new(0, 4.0, 0)
-        else
-            tagPos = pos + Vector3.new(0, 5.5, 0)
-        end
+        local tagPos = anchorPos + Vector3.new(0, halfHeight + VISUALS.bestOffsetY, 0)
         local tagScreen, tagOn = w2s(tagPos)
         if tagOn then
             d.bestTag.Position = tagScreen
@@ -552,12 +564,7 @@ local function renderStand(meta)
 
     -- ===== MONEY PER/S (below feet in world space) =====
     if S.moneyEnabled then
-        local moneyWorldPos
-        if torso and torso:IsA("BasePart") then
-            moneyWorldPos = torso.Position - Vector3.new(0, 2.5, 0)
-        else
-            moneyWorldPos = pos - Vector3.new(0, 1.5, 0)
-        end
+        local moneyWorldPos = anchorPos - Vector3.new(0, halfHeight + VISUALS.moneyOffsetY, 0)
         local moneyScreen, moneyOn = w2s(moneyWorldPos)
         if moneyOn then
             d.money.Text = "$" .. formatNumber(info.income) .. "/s"
@@ -820,3 +827,4 @@ function API:GetBest()
 end
 
 return API
+
