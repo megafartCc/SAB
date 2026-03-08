@@ -449,9 +449,9 @@ local function renderStand(meta)
     if S.nameEnabled then
         local nameWorldPos
         if head and head:IsA("BasePart") then
-            nameWorldPos = head.Position + Vector3.new(0, 1.5, 0)
+            nameWorldPos = head.Position + Vector3.new(0, 3.0, 0)
         else
-            nameWorldPos = pos + Vector3.new(0, 3, 0)
+            nameWorldPos = pos + Vector3.new(0, 4.5, 0)
         end
         local nameScreen, nameOn = w2s(nameWorldPos)
         if nameOn then
@@ -470,9 +470,9 @@ local function renderStand(meta)
     if isBest and S.nameEnabled then
         local tagPos
         if head and head:IsA("BasePart") then
-            tagPos = head.Position + Vector3.new(0, 2.2, 0)
+            tagPos = head.Position + Vector3.new(0, 4.0, 0)
         else
-            tagPos = pos + Vector3.new(0, 3.7, 0)
+            tagPos = pos + Vector3.new(0, 5.5, 0)
         end
         local tagScreen, tagOn = w2s(tagPos)
         if tagOn then
