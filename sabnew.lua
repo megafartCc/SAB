@@ -77,6 +77,7 @@ end)
 
 local function safeESP(fn, s)
     if ESP then pcall(fn, ESP, s) end
+end
 
 
 -- ==================================================
