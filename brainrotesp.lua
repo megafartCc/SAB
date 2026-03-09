@@ -66,6 +66,17 @@ local function w2s(p)
     return V2(v.X, v.Y), on, v.Z
 end
 
+local function getUiParent()
+    if typeof(gethui) ~= "function" then
+        error("BrainrotESP requires gethui() for UI parenting")
+    end
+    local ok, ui = pcall(gethui)
+    if ok and typeof(ui) == "Instance" then
+        return ui
+    end
+    error("BrainrotESP gethui() did not return an Instance")
+end
+
 -- Lookup tables
 local animalsLookup = {}
 for k, e in pairs(AnimalsDataModule) do
@@ -134,9 +145,8 @@ local function makeDrawings()
     hl.OutlineColor = Color3.new(1, 1, 1)
     hl.FillColor = S.highlightColor or COLORS.highlight
     hl.Enabled = false
-    -- Try adding to CoreGui
-    local CoreGui = game:GetService("CoreGui")
-    pcall(function() hl.Parent = CoreGui end)
+    local uiParent = getUiParent()
+    pcall(function() hl.Parent = uiParent end)
     d.highlight = hl
 
     -- Name text
