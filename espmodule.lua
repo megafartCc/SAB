@@ -114,13 +114,13 @@ local function buildSkel(plr)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    local n = 8
-    if hum.RigType == Enum.HumanoidRigType.R15 then n = 10 end
+    local n = 15
+    if hum.RigType == Enum.HumanoidRigType.R6 then n = 5 end
 
     for i = 1, n do
         local l = Drawing.new("Line")
-        l.Color = C3(255,255,255)
-        l.Thickness = 2
+        l.Color = C3(0, 255, 255) -- Cyan lines
+        l.Thickness = 1.5
         l.Visible = false
         d.skel[i] = l
     end
@@ -140,87 +140,43 @@ local function hideD(d)
     end)
 end
 
-local function drawSkelR6(d, char)
-    local head = char:FindFirstChild("Head")
-    local torso = char:FindFirstChild("Torso")
-    if not head or not torso then
-        for _, l in ipairs(d.skel) do l.Visible = false end
-        return
-    end
-    local lA = char:FindFirstChild("Left Arm")
-    local rA = char:FindFirstChild("Right Arm")
-    local lL = char:FindFirstChild("Left Leg")
-    local rL = char:FindFirstChild("Right Leg")
+local connectionsR15 = {
+    {"Head", "UpperTorso"},
+    {"UpperTorso", "LowerTorso"},
+    {"LowerTorso", "HumanoidRootPart"},
+    {"UpperTorso", "LeftUpperArm"},
+    {"LeftUpperArm", "LeftLowerArm"},
+    {"LeftLowerArm", "LeftHand"},
+    {"UpperTorso", "RightUpperArm"},
+    {"RightUpperArm", "RightLowerArm"},
+    {"RightLowerArm", "RightHand"},
+    {"LowerTorso", "LeftUpperLeg"},
+    {"LeftUpperLeg", "LeftLowerLeg"},
+    {"LeftLowerLeg", "LeftFoot"},
+    {"LowerTorso", "RightUpperLeg"},
+    {"RightUpperLeg", "RightLowerLeg"},
+    {"RightLowerLeg", "RightFoot"}
+}
 
-    local tc = torso.CFrame
-    local neck = (tc * CF(0,1,0)).Position
-    local pelvis = (tc * CF(0,-1,0)).Position
-    local lS = (tc * CF(-1.5,1,0)).Position
-    local rS = (tc * CF(1.5,1,0)).Position
-    local lH = (tc * CF(-0.5,-1,0)).Position
-    local rH = (tc * CF(0.5,-1,0)).Position
-    local lHand = lA and (lA.CFrame * CF(0,-1,0)).Position or lS
-    local rHand = rA and (rA.CFrame * CF(0,-1,0)).Position or rS
-    local lFoot = lL and (lL.CFrame * CF(0,-1,0)).Position or lH
-    local rFoot = rL and (rL.CFrame * CF(0,-1,0)).Position or rH
+local connectionsR6 = {
+    {"Head", "Torso"},
+    {"Torso", "Left Arm"},
+    {"Torso", "Right Arm"},
+    {"Torso", "Left Leg"},
+    {"Torso", "Right Leg"}
+}
 
-    local j = {
-        {head.Position, neck},
-        {lS, rS},
-        {lS, lHand},
-        {rS, rHand},
-        {neck, pelvis},
-        {lH, rH},
-        {lH, lFoot},
-        {rH, rFoot},
-    }
-    for i, p in ipairs(j) do
+local function drawSkel(d, char, rigType)
+    local conns = rigType == Enum.HumanoidRigType.R15 and connectionsR15 or connectionsR6
+    
+    for i, conn in ipairs(conns) do
         local l = d.skel[i]
         if l then
-            local a, oA, zA = w2s(p[1])
-            local b, oB, zB = w2s(p[2])
-            if (oA or oB) and zA > 0 and zB > 0 then
-                l.From = a
-                l.To = b
-                l.Visible = true
-            else
-                l.Visible = false
-            end
-        end
-    end
-end
-
-local function drawSkelR15(d, char)
-    local head = char:FindFirstChild("Head")
-    local uT = char:FindFirstChild("UpperTorso")
-    local lT = char:FindFirstChild("LowerTorso")
-    local lUA = char:FindFirstChild("LeftUpperArm")
-    local lLA = char:FindFirstChild("LeftLowerArm")
-    local rUA = char:FindFirstChild("RightUpperArm")
-    local rLA = char:FindFirstChild("RightLowerArm")
-    local lUL = char:FindFirstChild("LeftUpperLeg")
-    local lLL = char:FindFirstChild("LeftLowerLeg")
-    local rUL = char:FindFirstChild("RightUpperLeg")
-    local rLL = char:FindFirstChild("RightLowerLeg")
-
-    if not head or not uT then
-        for _, l in ipairs(d.skel) do l.Visible = false end
-        return
-    end
-
-    local parts = {
-        {head, uT}, {uT, lT},
-        {uT, lUA}, {lUA, lLA},
-        {uT, rUA}, {rUA, rLA},
-        {lT, lUL}, {lUL, lLL},
-        {lT, rUL}, {rUL, rLL},
-    }
-    for i, p in ipairs(parts) do
-        local l = d.skel[i]
-        if l then
-            if p[1] and p[2] and p[1].Parent and p[2].Parent then
-                local a, oA, zA = w2s(p[1].Position)
-                local b, oB, zB = w2s(p[2].Position)
+            local p1 = char:FindFirstChild(conn[1])
+            local p2 = char:FindFirstChild(conn[2])
+            if p1 and p2 then
+                local a, oA, zA = w2s(p1.Position)
+                local b, oB, zB = w2s(p2.Position)
                 if (oA or oB) and zA > 0 and zB > 0 then
                     l.From = a
                     l.To = b
@@ -341,11 +297,7 @@ RunService.Heartbeat:Connect(function()
 
             if M.SkeletonEnabled then
                 if not d.skelBuilt then buildSkel(plr) end
-                if hum.RigType == Enum.HumanoidRigType.R15 then
-                    drawSkelR15(d, char)
-                else
-                    drawSkelR6(d, char)
-                end
+                drawSkel(d, char, hum.RigType)
             else
                 for _, l in ipairs(d.skel or {}) do
                     pcall(function() l.Visible = false end)
