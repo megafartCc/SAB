@@ -14,6 +14,8 @@ M.TracersEnabled = false
 M.SkeletonEnabled = false
 M.TeamEnabled = false
 M.HeldItemEnabled = false
+M.SharedUsersEnabled = false
+M.SharedUsers = {}
 M.MaxDist = 1000
 
 local tracked = {}
@@ -28,6 +30,30 @@ local function alive(p)
     if not c then return false end
     local h = c:FindFirstChildOfClass("Humanoid")
     return h and h.Health > 0
+end
+
+local function isSharedUser(plr)
+    local shared = M.SharedUsers
+    if type(shared) ~= "table" or not plr then
+        return false
+    end
+
+    local userId = tostring(plr.UserId or "")
+    if userId ~= "" and shared[userId] then
+        return true
+    end
+
+    local name = string.lower(tostring(plr.Name or ""))
+    if name ~= "" and shared[name] then
+        return true
+    end
+
+    local displayName = string.lower(tostring(plr.DisplayName or ""))
+    if displayName ~= "" and shared[displayName] then
+        return true
+    end
+
+    return false
 end
 
 local function make(plr)
@@ -80,6 +106,13 @@ local function make(plr)
         d.heldItem.Size = 13
         d.heldItem.Center = true
         d.heldItem.Outline = true
+
+        d.sharedUserTag = Drawing.new("Text")
+        d.sharedUserTag.Visible = false
+        d.sharedUserTag.Color = C3(255,120,255)
+        d.sharedUserTag.Size = 13
+        d.sharedUserTag.Center = true
+        d.sharedUserTag.Outline = true
     end)
     tracked[plr] = d
 end
@@ -95,6 +128,7 @@ local function nuke(plr)
         if d.hpBg then d.hpBg:Remove() end
         if d.hpFill then d.hpFill:Remove() end
         if d.heldItem then d.heldItem:Remove() end
+        if d.sharedUserTag then d.sharedUserTag:Remove() end
         for _, l in ipairs(d.skel or {}) do l:Remove() end
     end)
     tracked[plr] = nil
@@ -136,6 +170,7 @@ local function hideD(d)
         if d.hpBg then d.hpBg.Visible = false end
         if d.hpFill then d.hpFill.Visible = false end
         if d.heldItem then d.heldItem.Visible = false end
+        if d.sharedUserTag then d.sharedUserTag.Visible = false end
         for _, l in ipairs(d.skel or {}) do l.Visible = false end
     end)
 end
@@ -246,6 +281,16 @@ RunService.Heartbeat:Connect(function()
                 d.name.Visible = false
             end
 
+            if d.sharedUserTag then
+                if M.SharedUsersEnabled and isSharedUser(plr) then
+                    d.sharedUserTag.Text = "UNKNOWNHUB user"
+                    d.sharedUserTag.Position = V2(cx, cy - h/2 - (M.NameEnabled and 34 or 18))
+                    d.sharedUserTag.Visible = true
+                else
+                    d.sharedUserTag.Visible = false
+                end
+            end
+
             if M.TeamEnabled then
                 local teamName = "No Team"
                 if plr.Team then teamName = plr.Team.Name end
@@ -349,5 +394,42 @@ function API:SetSkeletonEsp(s)
     end
 end
 function API:SetHeldItemEsp(s) M.HeldItemEnabled = s end
+function API:SetSharedUsersEsp(s) M.SharedUsersEnabled = s == true end
+function API:SetSharedUsers(users)
+    local shared = {}
+
+    if type(users) == "table" then
+        local seqCount = #users
+
+        for _, entry in ipairs(users) do
+            if type(entry) == "table" then
+                local entryUserId = entry.userid or entry.userid_str or entry.id
+                local entryUser = entry.user or entry.username or entry.name
+
+                if entryUserId ~= nil then
+                    shared[tostring(entryUserId)] = true
+                end
+
+                if entryUser ~= nil then
+                    shared[string.lower(tostring(entryUser))] = true
+                end
+            else
+                local text = tostring(entry)
+                shared[text] = true
+                shared[string.lower(text)] = true
+            end
+        end
+
+        for key, value in pairs(users) do
+            if not (type(key) == "number" and key >= 1 and key <= seqCount) and value == true then
+                local text = tostring(key)
+                shared[text] = true
+                shared[string.lower(text)] = true
+            end
+        end
+    end
+
+    M.SharedUsers = shared
+end
 function API:SetMaxDist(v) M.MaxDist = v end
 return API
