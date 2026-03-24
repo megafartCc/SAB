@@ -17,6 +17,11 @@ M.HeldItemEnabled = false
 M.SharedUsersEnabled = false
 M.SharedUsers = {}
 M.MaxDist = 1000
+M.ChamsEnabled = false
+M.ChamsGlowEnabled = true
+M.ChamsColor = C3(0, 255, 0)
+M.ChamsFillTransparency = 0.72
+M.ChamsGlowTransparency = 0
 
 local tracked = {}
 
@@ -32,28 +37,93 @@ local function alive(p)
     return h and h.Health > 0
 end
 
-local function isSharedUser(plr)
+local function trimSharedText(value)
+    if value == nil then
+        return ""
+    end
+    return tostring(value):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function buildSharedUserRecord(entry)
+    if entry == true then
+        return {}
+    end
+
+    if type(entry) ~= "table" then
+        local text = trimSharedText(entry)
+        if text == "" then
+            return nil
+        end
+
+        return {
+            user = text,
+        }
+    end
+
+    local record = {}
+    local userId = trimSharedText(entry.userid or entry.userid_str or entry.id or entry.userId)
+    local user = trimSharedText(entry.user or entry.username or entry.name)
+    local discordUsername = trimSharedText(
+        entry.discordUsername
+        or entry.discord_username
+        or entry.discord_user
+        or entry.discordUser
+        or entry.discord
+    )
+
+    if userId ~= "" then
+        record.userid = userId
+    end
+
+    if user ~= "" then
+        record.user = user
+    end
+
+    if discordUsername ~= "" then
+        record.discordUsername = discordUsername
+    end
+
+    if next(record) == nil then
+        return {}
+    end
+
+    return record
+end
+
+local function addSharedAlias(shared, key, record)
+    local alias = trimSharedText(key)
+    if alias == "" then
+        return
+    end
+    shared[alias] = record
+end
+
+local function getSharedUserRecord(plr)
     local shared = M.SharedUsers
     if type(shared) ~= "table" or not plr then
-        return false
+        return nil
     end
 
     local userId = tostring(plr.UserId or "")
-    if userId ~= "" and shared[userId] then
-        return true
+    if userId ~= "" and shared[userId] ~= nil then
+        return buildSharedUserRecord(shared[userId])
     end
 
     local name = string.lower(tostring(plr.Name or ""))
-    if name ~= "" and shared[name] then
-        return true
+    if name ~= "" and shared[name] ~= nil then
+        return buildSharedUserRecord(shared[name])
     end
 
     local displayName = string.lower(tostring(plr.DisplayName or ""))
-    if displayName ~= "" and shared[displayName] then
-        return true
+    if displayName ~= "" and shared[displayName] ~= nil then
+        return buildSharedUserRecord(shared[displayName])
     end
 
-    return false
+    return nil
+end
+
+local function isSharedUser(plr)
+    return getSharedUserRecord(plr) ~= nil
 end
 
 local function make(plr)
@@ -113,8 +183,227 @@ local function make(plr)
         d.sharedUserTag.Size = 13
         d.sharedUserTag.Center = true
         d.sharedUserTag.Outline = true
+
+        d.chams = nil
     end)
     tracked[plr] = d
+end
+
+local function ensureChamsState(d)
+    if type(d.chams) ~= "table" then
+        d.chams = {
+            highlight = nil,
+            glowFolder = nil,
+            glowParts = {},
+            originalTransparencies = {},
+        }
+    end
+
+    d.chams.glowParts = type(d.chams.glowParts) == "table" and d.chams.glowParts or {}
+    d.chams.originalTransparencies = type(d.chams.originalTransparencies) == "table" and d.chams.originalTransparencies or {}
+    return d.chams
+end
+
+local function rememberTransparency(state, part)
+    if state.originalTransparencies[part] == nil then
+        state.originalTransparencies[part] = part.Transparency
+    end
+end
+
+local function restorePartTransparency(state, part)
+    local original = state.originalTransparencies[part]
+    if original ~= nil and typeof(part) == "Instance" and part:IsA("BasePart") and part.Parent ~= nil then
+        pcall(function()
+            part.Transparency = original
+        end)
+    end
+end
+
+local function restoreAllChamsTransparency(state)
+    for part in pairs(state.originalTransparencies) do
+        restorePartTransparency(state, part)
+    end
+    state.originalTransparencies = {}
+end
+
+local function destroyGlowFolder(state, shouldRestore)
+    if shouldRestore then
+        restoreAllChamsTransparency(state)
+    end
+
+    for part, clone in pairs(state.glowParts) do
+        if typeof(clone) == "Instance" then
+            pcall(function()
+                clone:Destroy()
+            end)
+        end
+        state.glowParts[part] = nil
+    end
+
+    if typeof(state.glowFolder) == "Instance" then
+        pcall(function()
+            state.glowFolder:Destroy()
+        end)
+    end
+    state.glowFolder = nil
+end
+
+local function cloneGlowPart(part, folder)
+    local clone = part:Clone()
+    clone.Name = "GlowPart"
+
+    for _, child in ipairs(clone:GetDescendants()) do
+        if child:IsA("Decal")
+            or child:IsA("Texture")
+            or child:IsA("SurfaceAppearance")
+            or child:IsA("Script")
+            or child:IsA("LocalScript") then
+            child:Destroy()
+        end
+    end
+
+    if clone:IsA("MeshPart") then
+        pcall(function()
+            clone.TextureID = ""
+        end)
+    end
+
+    clone.Color = M.ChamsColor
+    clone.Material = Enum.Material.Neon
+    clone.Transparency = math.clamp(tonumber(M.ChamsGlowTransparency) or 0, 0, 1)
+    clone.CanCollide = false
+    clone.CanQuery = false
+    clone.CanTouch = false
+    clone.CastShadow = false
+    clone.Massless = true
+    clone.Anchored = false
+    clone.CFrame = part.CFrame
+    clone.Parent = folder
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = clone
+    weld.Part1 = part
+    weld.Parent = clone
+
+    return clone
+end
+
+local function ensureChams(d, char)
+    if not d or typeof(char) ~= "Instance" then
+        return nil
+    end
+
+    local state = ensureChamsState(d)
+    local highlight = state.highlight
+    if typeof(highlight) ~= "Instance" or not highlight:IsA("Highlight") or highlight.Parent == nil then
+        highlight = Instance.new("Highlight")
+        highlight.Name = "WallhackESP"
+        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        highlight.Parent = char
+        state.highlight = highlight
+    elseif highlight.Parent ~= char then
+        highlight.Parent = char
+    end
+
+    highlight.Adornee = char
+    highlight.FillColor = M.ChamsColor
+    highlight.OutlineColor = M.ChamsColor
+    highlight.FillTransparency = math.clamp(tonumber(M.ChamsFillTransparency) or 0, 0, 1)
+    highlight.OutlineTransparency = 1
+    highlight.Enabled = M.ChamsEnabled == true
+
+    if not M.ChamsGlowEnabled then
+        destroyGlowFolder(state, true)
+        return state
+    end
+
+    local glowFolder = state.glowFolder
+    if typeof(glowFolder) ~= "Instance" or glowFolder.Parent == nil then
+        glowFolder = Instance.new("Folder")
+        glowFolder.Name = "GlowESP"
+        glowFolder.Parent = char
+        state.glowFolder = glowFolder
+    elseif glowFolder.Parent ~= char then
+        glowFolder.Parent = char
+    end
+
+    local seen = {}
+    for _, obj in ipairs(char:GetDescendants()) do
+        if obj:IsA("BasePart")
+            and obj.Name ~= "HumanoidRootPart"
+            and not obj:IsDescendantOf(glowFolder) then
+            seen[obj] = true
+            rememberTransparency(state, obj)
+
+            local clone = state.glowParts[obj]
+            if typeof(clone) ~= "Instance" or clone.Parent == nil then
+                clone = cloneGlowPart(obj, glowFolder)
+                state.glowParts[obj] = clone
+            end
+
+            clone.Color = M.ChamsColor
+            clone.Material = Enum.Material.Neon
+            clone.Transparency = math.clamp(tonumber(M.ChamsGlowTransparency) or 0, 0, 1)
+            obj.Transparency = 1
+        end
+    end
+
+    for part, clone in pairs(state.glowParts) do
+        if not seen[part] or typeof(part) ~= "Instance" or part.Parent == nil or not part:IsDescendantOf(char) then
+            restorePartTransparency(state, part)
+            state.originalTransparencies[part] = nil
+            if typeof(clone) == "Instance" then
+                pcall(function()
+                    clone:Destroy()
+                end)
+            end
+            state.glowParts[part] = nil
+        end
+    end
+
+    return state
+end
+
+local function hideChams(d)
+    if not d or type(d.chams) ~= "table" then
+        return
+    end
+
+    if typeof(d.chams.highlight) == "Instance" then
+        d.chams.highlight.Enabled = false
+    end
+    destroyGlowFolder(d.chams, true)
+end
+
+local function destroyChams(d)
+    if not d or type(d.chams) ~= "table" then
+        d.chams = nil
+        return
+    end
+
+    local state = d.chams
+    destroyGlowFolder(state, true)
+    if typeof(state.highlight) == "Instance" then
+        pcall(function()
+            state.highlight:Destroy()
+        end)
+    end
+    d.chams = nil
+end
+
+local function refreshChams()
+    for plr, d in pairs(tracked) do
+        if M.ChamsEnabled and alive(plr) then
+            local char = plr.Character
+            if char then
+                ensureChams(d, char)
+            else
+                hideChams(d)
+            end
+        else
+            hideChams(d)
+        end
+    end
 end
 
 local function nuke(plr)
@@ -131,6 +420,7 @@ local function nuke(plr)
         if d.sharedUserTag then d.sharedUserTag:Remove() end
         for _, l in ipairs(d.skel or {}) do l:Remove() end
     end)
+    destroyChams(d)
     tracked[plr] = nil
 end
 
@@ -232,6 +522,7 @@ RunService.Heartbeat:Connect(function()
         pcall(function()
             if not alive(plr) then
                 hideD(d)
+                hideChams(d)
                 if not Players:FindFirstChild(plr.Name) then nuke(plr) end
                 return
             end
@@ -239,16 +530,34 @@ RunService.Heartbeat:Connect(function()
             local char = plr.Character
             local hrp = char:FindFirstChild("HumanoidRootPart")
             local hum = char:FindFirstChildOfClass("Humanoid")
-            if not hrp or not hum then hideD(d) return end
-
-            local sv, onS = Camera:WorldToViewportPoint(hrp.Position)
-            if not onS then hideD(d) return end
+            if not hrp or not hum then
+                hideD(d)
+                hideChams(d)
+                return
+            end
 
             local me = LP.Character
             local myR = me and me:FindFirstChild("HumanoidRootPart")
-            if not myR then hideD(d) return end
+            if not myR then
+                hideD(d)
+                hideChams(d)
+                return
+            end
             local dist = (hrp.Position - myR.Position).Magnitude
-            if dist > M.MaxDist then hideD(d) return end
+            if dist > M.MaxDist then
+                hideD(d)
+                hideChams(d)
+                return
+            end
+
+            if M.ChamsEnabled then
+                ensureChams(d, char)
+            else
+                hideChams(d)
+            end
+
+            local sv, onS = Camera:WorldToViewportPoint(hrp.Position)
+            if not onS then hideD(d) return end
 
             local tP = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0,3,0))
             local bP = Camera:WorldToViewportPoint(hrp.Position - Vector3.new(0,3,0))
@@ -282,8 +591,13 @@ RunService.Heartbeat:Connect(function()
             end
 
             if d.sharedUserTag then
-                if M.SharedUsersEnabled and isSharedUser(plr) then
-                    d.sharedUserTag.Text = "UNKNOWNHUB user"
+                local sharedRecord = M.SharedUsersEnabled and getSharedUserRecord(plr) or nil
+                if sharedRecord then
+                    local sharedLabel = trimSharedText(sharedRecord.discordUsername)
+                    if sharedLabel == "" then
+                        sharedLabel = "UNKNOWNHUB user"
+                    end
+                    d.sharedUserTag.Text = sharedLabel
                     d.sharedUserTag.Position = V2(cx, cy - h/2 - (M.NameEnabled and 34 or 18))
                     d.sharedUserTag.Visible = true
                 else
@@ -402,29 +716,32 @@ function API:SetSharedUsers(users)
         local seqCount = #users
 
         for _, entry in ipairs(users) do
-            if type(entry) == "table" then
-                local entryUserId = entry.userid or entry.userid_str or entry.id
-                local entryUser = entry.user or entry.username or entry.name
-
-                if entryUserId ~= nil then
-                    shared[tostring(entryUserId)] = true
+            local record = buildSharedUserRecord(entry)
+            if record then
+                if record.userid ~= nil then
+                    addSharedAlias(shared, record.userid, record)
                 end
 
-                if entryUser ~= nil then
-                    shared[string.lower(tostring(entryUser))] = true
+                if record.user ~= nil then
+                    addSharedAlias(shared, string.lower(tostring(record.user)), record)
                 end
-            else
-                local text = tostring(entry)
-                shared[text] = true
-                shared[string.lower(text)] = true
             end
         end
 
         for key, value in pairs(users) do
-            if not (type(key) == "number" and key >= 1 and key <= seqCount) and value == true then
-                local text = tostring(key)
-                shared[text] = true
-                shared[string.lower(text)] = true
+            if not (type(key) == "number" and key >= 1 and key <= seqCount) then
+                local record = buildSharedUserRecord(value)
+                if record then
+                    addSharedAlias(shared, key, record)
+                    if record.userid ~= nil then
+                        addSharedAlias(shared, record.userid, record)
+                    end
+                    if record.user ~= nil then
+                        addSharedAlias(shared, string.lower(tostring(record.user)), record)
+                    end
+                elseif value == true then
+                    addSharedAlias(shared, key, {})
+                end
             end
         end
     end
@@ -432,4 +749,26 @@ function API:SetSharedUsers(users)
     M.SharedUsers = shared
 end
 function API:SetMaxDist(v) M.MaxDist = v end
+function API:SetChamsEsp(s)
+    M.ChamsEnabled = s == true
+    refreshChams()
+end
+function API:SetChamsColor(color)
+    if typeof(color) == "Color3" then
+        M.ChamsColor = color
+        refreshChams()
+    end
+end
+function API:SetChamsGlow(s)
+    M.ChamsGlowEnabled = s == true
+    refreshChams()
+end
+function API:SetChamsFillTransparency(v)
+    M.ChamsFillTransparency = math.clamp(tonumber(v) or M.ChamsFillTransparency, 0, 1)
+    refreshChams()
+end
+function API:SetChamsGlowTransparency(v)
+    M.ChamsGlowTransparency = math.clamp(tonumber(v) or M.ChamsGlowTransparency, 0, 1)
+    refreshChams()
+end
 return API
