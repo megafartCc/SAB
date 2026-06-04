@@ -424,6 +424,8 @@ local function nuke(plr)
     tracked[plr] = nil
 end
 
+local R6_SKELETON_LINE_COUNT = 8
+
 local function buildSkel(plr)
     local d = tracked[plr]
     if not d then return end
@@ -439,7 +441,7 @@ local function buildSkel(plr)
     if not hum then return end
 
     local n = 15
-    if hum.RigType == Enum.HumanoidRigType.R6 then n = 5 end
+    if hum.RigType == Enum.HumanoidRigType.R6 then n = R6_SKELETON_LINE_COUNT end
 
     for i = 1, n do
         local l = Drawing.new("Line")
@@ -448,6 +450,7 @@ local function buildSkel(plr)
         l.Visible = false
         d.skel[i] = l
     end
+    d.skelRigType = hum.RigType
     d.skelBuilt = true
 end
 
@@ -491,27 +494,90 @@ local connectionsR6 = {
     {"Torso", "Right Leg"}
 }
 
+local function partPoint(part, offset)
+    if typeof(part) ~= "Instance" or not part:IsA("BasePart") then
+        return nil
+    end
+    return part.CFrame:PointToWorldSpace(offset)
+end
+
+local function drawWorldLine(line, fromPosition, toPosition)
+    if not line or not fromPosition or not toPosition then
+        if line then line.Visible = false end
+        return
+    end
+
+    local a, oA, zA = w2s(fromPosition)
+    local b, oB, zB = w2s(toPosition)
+    if (oA or oB) and zA > 0 and zB > 0 then
+        line.From = a
+        line.To = b
+        line.Visible = true
+    else
+        line.Visible = false
+    end
+end
+
+local function drawR6Skel(d, char)
+    local head = char:FindFirstChild("Head")
+    local torso = char:FindFirstChild("Torso")
+    local leftArm = char:FindFirstChild("Left Arm")
+    local rightArm = char:FindFirstChild("Right Arm")
+    local leftLeg = char:FindFirstChild("Left Leg")
+    local rightLeg = char:FindFirstChild("Right Leg")
+
+    if not torso then
+        for _, line in ipairs(d.skel or {}) do
+            line.Visible = false
+        end
+        return
+    end
+
+    local torsoSize = torso.Size
+    local neck = partPoint(torso, Vector3.new(0, torsoSize.Y * 0.52, 0))
+    local pelvis = partPoint(torso, Vector3.new(0, -torsoSize.Y * 0.48, 0))
+    local leftShoulder = partPoint(torso, Vector3.new(-torsoSize.X * 0.52, torsoSize.Y * 0.34, 0))
+    local rightShoulder = partPoint(torso, Vector3.new(torsoSize.X * 0.52, torsoSize.Y * 0.34, 0))
+    local leftHip = partPoint(torso, Vector3.new(-torsoSize.X * 0.26, -torsoSize.Y * 0.50, 0))
+    local rightHip = partPoint(torso, Vector3.new(torsoSize.X * 0.26, -torsoSize.Y * 0.50, 0))
+
+    local segments = {
+        { head and partPoint(head, Vector3.new(0, -head.Size.Y * 0.50, 0)), neck },
+        { neck, pelvis },
+        { leftShoulder, rightShoulder },
+        { leftShoulder, leftArm and partPoint(leftArm, Vector3.new(0, -leftArm.Size.Y * 0.50, 0)) },
+        { rightShoulder, rightArm and partPoint(rightArm, Vector3.new(0, -rightArm.Size.Y * 0.50, 0)) },
+        { leftHip, rightHip },
+        { leftHip, leftLeg and partPoint(leftLeg, Vector3.new(0, -leftLeg.Size.Y * 0.50, 0)) },
+        { rightHip, rightLeg and partPoint(rightLeg, Vector3.new(0, -rightLeg.Size.Y * 0.50, 0)) },
+    }
+
+    for i, line in ipairs(d.skel or {}) do
+        local segment = segments[i]
+        if segment then
+            drawWorldLine(line, segment[1], segment[2])
+        else
+            line.Visible = false
+        end
+    end
+end
+
 local function drawSkel(d, char, rigType)
+    if rigType == Enum.HumanoidRigType.R6 then
+        drawR6Skel(d, char)
+        return
+    end
+
     local conns = rigType == Enum.HumanoidRigType.R15 and connectionsR15 or connectionsR6
     
-    for i, conn in ipairs(conns) do
-        local l = d.skel[i]
-        if l then
+    for i, line in ipairs(d.skel or {}) do
+        local conn = conns[i]
+        if conn then
             local p1 = char:FindFirstChild(conn[1])
             local p2 = char:FindFirstChild(conn[2])
-            if p1 and p2 then
-                local a, oA, zA = w2s(p1.Position)
-                local b, oB, zB = w2s(p2.Position)
-                if (oA or oB) and zA > 0 and zB > 0 then
-                    l.From = a
-                    l.To = b
-                    l.Visible = true
-                else
-                    l.Visible = false
-                end
-            else
-                l.Visible = false
-            end
+            drawWorldLine(line, p1 and p1.Position, p2 and p2.Position)
+        else
+            line.Visible = false
         end
     end
 end
@@ -655,7 +721,7 @@ RunService.Heartbeat:Connect(function()
             end
 
             if M.SkeletonEnabled then
-                if not d.skelBuilt then buildSkel(plr) end
+                if not d.skelBuilt or d.skelRigType ~= hum.RigType then buildSkel(plr) end
                 drawSkel(d, char, hum.RigType)
             else
                 for _, l in ipairs(d.skel or {}) do
